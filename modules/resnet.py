@@ -116,6 +116,7 @@ class ResNet(nn.Module):
 if __name__ == '__main__':
     def construct_backbone(cfg_backbone=ResNet):
         # resnet101 has 3, 4, 23, 3 blocks for each stage
+        # resnet50 has 3, 4, 6, 3 blocks for each stage
         backbone = cfg_backbone([3, 4, 23, 3])
 
         # Add downsampling layers until we reach the number we need

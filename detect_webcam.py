@@ -69,36 +69,38 @@ def main():
             frame_tensor = frame_tensor.cuda()
 
         with torch.no_grad(), timer.counter('forward'):
-            class_p, box_p, coef_p, proto_p = net(frame_tensor.unsqueeze(0))
+            class_p, box_p, coef_p, proto_p = net.forward(frame_tensor.unsqueeze(0))
 
         with timer.counter('nms'):
             ids_p, class_p, box_p, coef_p, proto_p = nms(class_p, box_p, coef_p, proto_p, net.anchors, cfg)
 
         with timer.counter('after_nms'):
             ids_p, class_p, boxes_p, masks_p = after_nms(ids_p, class_p, box_p, coef_p, proto_p, img_h, img_w, cfg)
-
+            # print(ids_p)
         with timer.counter('save_img'):
             frame_numpy = draw_img(ids_p, class_p, boxes_p, masks_p, frame_origin, cfg, fps=t_fps)
 
         if cfg.real_time:
             cv2.imshow('Detection', cv2.resize(frame_numpy,(frame_numpy.shape[1]*2,frame_numpy.shape[0]*2)) )
-            cv2.waitKey(1)
+            key = cv2.waitKey(1)
+            if key == 27:
+                break
         
-        aa = time.perf_counter()
-        if i > 0:
-            batch_time = aa - temp
-            timer.add_batch_time(batch_time)
-        temp = aa
+        # aa = time.perf_counter()
+        # if i > 0:
+        #     batch_time = aa - temp
+        #     timer.add_batch_time(batch_time)
+        # temp = aa
 
-        if i > 0:
-            t_t, t_d, t_f, t_nms, t_an, t_si = timer.get_times(['batch', 'data', 'forward',
-                                                                'nms', 'after_nms', 'save_img'])
-            fps, t_fps = 1 / (t_d + t_f + t_nms + t_an), 1 / t_t
-            bar_str = progress_bar.get_bar(i + 1)
-            print(f'\rDetecting: {bar_str} {i + 1}/{num_frames}, fps: {fps:.2f} | total fps: {t_fps:.2f} | '
-                f't_t: {t_t:.3f} | t_d: {t_d:.3f} | t_f: {t_f:.3f} | t_nms: {t_nms:.3f} | '
-                f't_after_nms: {t_an:.3f} | t_save_img: {t_si:.3f}', end='')
-        i+=1
+        # if i > 0:
+        #     t_t, t_d, t_f, t_nms, t_an, t_si = timer.get_times(['batch', 'data', 'forward',
+        #                                                         'nms', 'after_nms', 'save_img'])
+        #     fps, t_fps = 1 / (t_d + t_f + t_nms + t_an), 1 / t_t
+        #     bar_str = progress_bar.get_bar(i + 1)
+        #     print(f'\rDetecting: {bar_str} {i + 1}/{num_frames}, fps: {fps:.2f} | total fps: {t_fps:.2f} | '
+        #         f't_t: {t_t:.3f} | t_d: {t_d:.3f} | t_f: {t_f:.3f} | t_nms: {t_nms:.3f} | '
+        #         f't_after_nms: {t_an:.3f} | t_save_img: {t_si:.3f}', end='')
+        # i+=1
     cap.release()
 
 

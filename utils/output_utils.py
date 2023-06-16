@@ -314,9 +314,17 @@ def draw_img(ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=
         class_p = class_p.cpu().numpy()
         box_p = box_p.cpu().numpy()
         mask_p = mask_p.cpu().numpy()
+    print(ids_p)
+    idxs = np.in1d(ids_p, [39,64,67])
+    idxs = np.nonzero(idxs)
+    print(idxs)
+    # print(idxs)
+    ids_p = ids_p[idxs]
+    class_p = class_p[idxs]
+    box_p =  box_p[idxs]
+    mask_p = mask_p[idxs]
 
     num_detected = ids_p.shape[0]
-
     img_fused = img_origin
     if not cfg.hide_mask:
         masks_semantic = mask_p * (ids_p[:, None, None] + 1)  # expand ids_p' shape for broadcasting
