@@ -314,10 +314,8 @@ def draw_img(ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=
         class_p = class_p.cpu().numpy()
         box_p = box_p.cpu().numpy()
         mask_p = mask_p.cpu().numpy()
-    print(ids_p)
     idxs = np.in1d(ids_p, [39,64,67])
     idxs = np.nonzero(idxs)
-    print(idxs)
     # print(idxs)
     ids_p = ids_p[idxs]
     class_p = class_p[idxs]

@@ -13,8 +13,10 @@ from utils import timer
 from utils.output_utils import nms, after_nms, draw_img
 from utils.common_utils import ProgressBar
 from utils.augmentations import val_aug
+from multiprocessing import Process
+from multiprocessing import Pipe
 
-def main():
+def main(net_in_conn, net_out_conn):
     parser = argparse.ArgumentParser(description='YOLACT Detection.')
     parser.add_argument('--weight', default='weights/best_30.4_res101_coco_340000.pth', type=str)
     parser.add_argument('--img_size', type=int, default=544, help='The image size for validation.')
@@ -45,22 +47,18 @@ def main():
         cudnn.fastest = True
         net = net.cuda()
 
-    cap = cv2.VideoCapture(0)
-
-    target_fps = round(cap.get(cv2.CAP_PROP_FPS))
-    frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    num_frames = round(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
+    num_frames = net_in_conn.recv()['num_frames']
     progress_bar = ProgressBar(40, num_frames)
     timer.reset()
     t_fps = 0
     i = 0
-    while cap.isOpened():
+    # while cap.isOpened():
+    while True:
         if i == 1:
             timer.start()
 
-        frame_origin = cap.read()[1]
+        # frame_origin = cap.read()[1]
+        frame_origin = net_in_conn.recv()['frame']
         img_h, img_w = frame_origin.shape[0:2]
         frame_trans = val_aug(frame_origin, cfg.img_size)
 
@@ -85,7 +83,6 @@ def main():
             key = cv2.waitKey(10)
             if key == 27:
                 break
-        
         aa = time.perf_counter()
         if i > 0:
             batch_time = aa - temp
@@ -101,8 +98,42 @@ def main():
                 f't_t: {t_t:.3f} | t_d: {t_d:.3f} | t_f: {t_f:.3f} | t_nms: {t_nms:.3f} | '
                 f't_after_nms: {t_an:.3f} | t_save_img: {t_si:.3f}', end='')
         i+=1
-    cap.release()
+ 
 
+def cam_reader(cam_out_conn, cam_source):
+    cap = cv2.VideoCapture(cam_source)
+    target_fps = round(cap.get(cv2.CAP_PROP_FPS))
+    frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    num_frames = round(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    while cap.isOpened():
+        try:
+            ret, frame = cap.read()
+            height, width, channels = frame.shape
+            cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
+        except:
+            print("CAMERA COULD NOT BE OPEN")
+            break
 
 if __name__ == '__main__':
-    main()
+    cam_source = 0
+    # cam_source = 'http://192.168.178.41:5000/video'
+
+    net_in_conn, cam_out_conn = Pipe()
+    send_detect_in_conn, net_out_conn = Pipe()
+
+    stream_reader_process = Process(target=cam_reader, 
+                                    args=(cam_out_conn, cam_source))
+    rob_percept_process = Process(target=main, 
+                                    args=(net_in_conn, net_out_conn))
+    # post_detect_process = Process(target=post_detections, 
+    #                                 args=(send_detect_in_conn,url_detections,IS_ONLINE))
+    # start the receiver
+    stream_reader_process.start()
+    rob_percept_process.start()
+    # post_detect_process.start()
+    
+    # wait for all processes to finish
+    rob_percept_process.join()
+    stream_reader_process.kill()
+    # post_detect_process.kill()
