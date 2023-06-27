@@ -44,7 +44,7 @@ class processing_apriltag:
             for (tag_corner, tag_id) in zip(corners, ids):
                 # get (x,y) corners of tag
                 aruco_perimeter = cv2.arcLength(corners[0], True)
-                pixel_cm_ratio = aruco_perimeter / 11.2
+                pixel_cm_ratio = aruco_perimeter / 12.0
                 corners = tag_corner.reshape((4, 2))
                 (top_left, top_right, bottom_right, bottom_left) = corners
                 top_right, bottom_right = (int(top_right[0]), int(top_right[1])),(int(bottom_right[0]), int(bottom_right[1]))
@@ -59,7 +59,7 @@ class processing_apriltag:
                             cv2.FONT_HERSHEY_SIMPLEX,0.5, (0, 255, 0), 2)
             return image,pixel_cm_ratio
 
-def measure_size(img, ymin, ymax, xmin, xmax,pixel_cm_ratio):
+def measure_size(img, mask, ymin, ymax, xmin, xmax,pixel_cm_ratio):
         print(ymin, ymax, xmin, xmax,pixel_cm_ratio)
         box = np.int64(np.array([[xmin,ymin],[xmax,ymin],[xmax,ymax],[xmin,ymax]]))
         w = xmax - xmin
@@ -68,20 +68,10 @@ def measure_size(img, ymin, ymax, xmin, xmax,pixel_cm_ratio):
         angle = 0
         # box = None
         crop = img[int(ymin):int(ymax),int(xmin):int(xmax),:]
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        lower1 = np.array([0, 100, 20])
-        upper1 = np.array([10, 255, 255])
-        
-        # upper boundary RED color range values; Hue (160 - 180)
-        lower2 = np.array([160,100,20])
-        upper2 = np.array([179,255,255])
-        
-        lower_mask = cv2.inRange(hsv, lower1, upper1)
-        upper_mask = cv2.inRange(hsv, lower2, upper2)
-        
-        mask = lower_mask + upper_mask
+        mask_crop = mask[int(ymin):int(ymax),int(xmin):int(xmax)].astype(np.uint8)
+        # cv2.imshow('mask', mask_crop)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(mask_crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area > 5000:
@@ -99,9 +89,10 @@ def measure_size(img, ymin, ymax, xmin, xmax,pixel_cm_ratio):
             object_width = w / pixel_cm_ratio
             object_height = h / pixel_cm_ratio
             # print(object_height)
-            cv2.putText(img, "Width {} cm".format(round(object_width, 1)), (centroid[0], centroid[1] + 10),
+            cv2.putText(img, "{}x{} cm".format(round(object_width, 1),round(object_height, 1)), (centroid[0], centroid[1] + 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            cv2.putText(img, "Height {} cm".format(round(object_height, 1)), (centroid[0], centroid[1] - 10),
+            
+            cv2.putText(img, "{} deg".format(round(angle, 1)), (centroid[0], centroid[1] - 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         return img, box, angle, centroid
 def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=None):
@@ -156,7 +147,8 @@ def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img
             color = COLORS[ids_p[i] + 1].tolist()
             cv2.rectangle(img_fused, (x1, y1), (x2, y2), color, thickness)
             print(y1, y2, x1, x2,pixel_cm_ratio)
-            img, box, angle, centroid = measure_size(img_fused, y1, y2, x1, x2,pixel_cm_ratio)
+            mask = mask_p[i]
+            img, box, angle, centroid = measure_size(img_fused, mask, y1, y2, x1, x2, pixel_cm_ratio)
             
             class_name = cfg.class_names[ids_p[i]]
             text_str = f'{class_name}: {class_p[i]:.2f}' if not cfg.hide_score else class_name
@@ -279,6 +271,8 @@ def cam_reader(cam_out_conn, cam_source):
         try:
             ret, frame = cap.read()
             height, width, channels = frame.shape
+            # frame = cv2.imread("C:/Users/David/Pictures/PXL_20230627_112438768.jpg") 
+            # frame = cv2.resize(frame, (width, height))
             cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
         except:
             print("CAMERA COULD NOT BE OPEN")
