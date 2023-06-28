@@ -1,10 +1,14 @@
 ## Yolact_mini
+Mirrored from [here](https://github.com/feiyuhuahuo/Yolact_minimal).
+
 Minimal PyTorch implementation of [Yolact:《YOLACT: Real-time Instance Segmentation》](https://arxiv.org/abs/1904.02689).  
 The original project is [here](https://github.com/dbolya/yolact).  
 
 This implementation simplified the original code, preserved the main function and made the network easy to understand.  
-This implementation has not been updated to Yolact++.  
+This implementation has not been updated to Yolact++.
 
+This repo also includes measurement of the objects' dimensions from generated masks by computing pixel to cm ratio with apriltags with the detect_measure.py script:
+![Example 0.1](readme_imgs/measure.png)
 
 ### The network structure.  
 ![Example 0](readme_imgs/network.png)
