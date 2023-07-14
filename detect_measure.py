@@ -44,7 +44,7 @@ class processing_apriltag:
             for (tag_corner, tag_id) in zip(corners, ids):
                 # get (x,y) corners of tag
                 aruco_perimeter = cv2.arcLength(corners[0], True)
-                pixel_cm_ratio = aruco_perimeter / 12.0
+                pixel_cm_ratio = aruco_perimeter / 24
                 corners = tag_corner.reshape((4, 2))
                 (top_left, top_right, bottom_right, bottom_left) = corners
                 top_right, bottom_right = (int(top_right[0]), int(top_right[1])),(int(bottom_right[0]), int(bottom_right[1]))
@@ -83,7 +83,7 @@ def measure_size(img, mask, ymin, ymax, xmin, xmax,pixel_cm_ratio):
                 centroid = (int(cx), int(cy))
                 box = cv2.boxPoints(((cx,cy),(w, h), angle))
                 box = np.int0(box)
-            crop = cv2.drawContours(crop, contours, -1, (0,255,0), 3,lineType = cv2.LINE_AA)
+            # crop = cv2.drawContours(crop, contours, -1, (0,255,0), 3,lineType = cv2.LINE_AA)
 
         if (pixel_cm_ratio is not None) and (centroid is not None):
             object_width = w / pixel_cm_ratio
@@ -267,20 +267,35 @@ def cam_reader(cam_out_conn, cam_source):
     frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     num_frames = round(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    while cap.isOpened():
-        try:
-            ret, frame = cap.read()
-            height, width, channels = frame.shape
-            # frame = cv2.imread("C:/Users/David/Pictures/PXL_20230627_112438768.jpg") 
-            # frame = cv2.resize(frame, (width, height))
-            cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
-        except:
-            print("CAMERA COULD NOT BE OPEN")
-            break
+    if cam_source == 0:
+        while cap.isOpened():
+            try:
+                ret, frame = cap.read()
+                height, width, channels = frame.shape
+                # frame = cv2.imread("C:/Users/David/Pictures/PXL_20230627_112438768.jpg") 
+                # frame = cv2.resize(frame, (width, height))
+                cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
+            except:
+                print("CAMERA COULD NOT BE OPEN")
+                break
+    else:
+        del cap
+        while True:
+            try:
+                cap = cv2.VideoCapture(cam_source)
+                ret, frame = cap.read()
+                height, width, channels = frame.shape
+                # frame = cv2.imread("C:/Users/David/Pictures/PXL_20230627_112438768.jpg") 
+                # frame = cv2.resize(frame, (width, height))
+                cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
+                del cap
+            except:
+                print("CAMERA COULD NOT BE OPEN")
+                break
 
 if __name__ == '__main__':
     cam_source = 0
-    # cam_source = 'http://192.168.178.41:5000/video'
+    # cam_source = 'http://192.168.1.137:8000/video'
 
     net_in_conn, cam_out_conn = Pipe()
     send_detect_in_conn, net_out_conn = Pipe()
