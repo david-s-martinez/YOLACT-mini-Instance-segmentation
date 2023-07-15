@@ -265,13 +265,10 @@ def main(net_in_conn, net_out_conn):
 
 def cam_reader(cam_out_conn, cam_source):
     cap = cv2.VideoCapture(cam_source)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,640);
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT,480);
-    target_fps = round(cap.get(cv2.CAP_PROP_FPS))
-    frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     num_frames = round(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if cam_source == 0:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT,480)
         while cap.isOpened():
             try:
                 ret, frame = cap.read()
