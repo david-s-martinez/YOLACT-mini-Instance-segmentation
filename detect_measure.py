@@ -61,12 +61,13 @@ class processing_apriltag:
             return image,pixel_cm_ratio
 
 def measure_size(img, mask, ymin, ymax, xmin, xmax,pixel_cm_ratio):
-        print(ymin, ymax, xmin, xmax,pixel_cm_ratio)
+        # print(ymin, ymax, xmin, xmax,pixel_cm_ratio)
         box = np.int64(np.array([[xmin,ymin],[xmax,ymin],[xmax,ymax],[xmin,ymax]]))
         w = xmax - xmin
         h = ymax - ymin
         centroid = None
         angle = 0
+        object_dims = [0,0]
         # box = None
         crop = img[int(ymin):int(ymax),int(xmin):int(xmax),:]
         mask_crop = mask[int(ymin):int(ymax),int(xmin):int(xmax)].astype(np.uint8)
@@ -86,16 +87,13 @@ def measure_size(img, mask, ymin, ymax, xmin, xmax,pixel_cm_ratio):
                 box = np.int0(box)
             # crop = cv2.drawContours(crop, contours, -1, (0,255,0), 3,lineType = cv2.LINE_AA)
 
-        if (pixel_cm_ratio is not None) and (centroid is not None):
-            object_width = w / pixel_cm_ratio
-            object_height = h / pixel_cm_ratio
-            # print(object_height)
-            cv2.putText(img, "{}x{} cm".format(round(object_width, 1),round(object_height, 1)), (centroid[0], centroid[1] + 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-            
-            cv2.putText(img, "{} deg".format(round(angle, 1)), (centroid[0], centroid[1] - 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        return img, box, angle, centroid
+        if (pixel_cm_ratio is not 0) and (centroid is not None):
+            object_width = int(w / pixel_cm_ratio)
+            object_height = int(h / pixel_cm_ratio)
+            object_dims = sorted([object_width,object_height])
+
+        return object_dims, abs(angle)
+
 def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=None):
     if ids_p is None:
         return img_origin
@@ -136,24 +134,23 @@ def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img
                 x1, y1, x2, y2 = box_p[i, :]
                 img_matting = (one_obj + new_mask)[y1:y2, x1:x2, :]
                 cv2.imwrite(f'results/images/{img_name}_{i}.jpg', img_matting)
-    scale = 0.6
+    scale = 0.45
     thickness = 1
     font = cv2.FONT_HERSHEY_DUPLEX
 
-    print(pixel_cm_ratio)
     if not cfg.hide_bbox:
         for i in reversed(range(num_detected)):
             x1, y1, x2, y2 = box_p[i, :]
 
             color = COLORS[ids_p[i] + 1].tolist()
             cv2.rectangle(img_fused, (x1, y1), (x2, y2), color, thickness)
-            print(y1, y2, x1, x2,pixel_cm_ratio)
+            # print(y1, y2, x1, x2,pixel_cm_ratio)
             mask = mask_p[i]
-            img, box, angle, centroid = measure_size(img_fused, mask, y1, y2, x1, x2, pixel_cm_ratio)
-            
+            object_dims, angle = measure_size(img_fused, mask, y1, y2, x1, x2, pixel_cm_ratio)
+            dims_str = f',{object_dims[1]}x{object_dims[0]}cm,{int(angle):.1f}deg'
             class_name = cfg.class_names[ids_p[i]]
             text_str = f'{class_name}: {class_p[i]:.2f}' if not cfg.hide_score else class_name
-
+            text_str = text_str + dims_str if 0 not in object_dims else text_str
             text_w, text_h = cv2.getTextSize(text_str, font, scale, thickness)[0]
             cv2.rectangle(img_fused, (x1, y1), (x1 + text_w, y1 + text_h + 5), color, -1)
             cv2.putText(img_fused, text_str, (x1, y1 + 15), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
@@ -162,9 +159,9 @@ def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img
         fps_str = f'fps: {fps:.2f}'
         text_w, text_h = cv2.getTextSize(fps_str, font, scale, thickness)[0]
         # Create a shadow to show the fps more clearly
-        img_fused = img_fused.astype(np.float32)
-        img_fused[0:text_h + 8, 0:text_w + 8] *= 0.6
-        img_fused = img_fused.astype(np.uint8)
+        # img_fused = img_fused.astype(np.float32)
+        # img_fused[0:text_h + 8, 0:text_w + 8] *= 0.6
+        # img_fused = img_fused.astype(np.uint8)
         cv2.putText(img_fused, fps_str, (0, text_h + 2), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
     return img_fused
@@ -206,7 +203,7 @@ def main(net_in_conn, net_out_conn):
     timer.reset()
     t_fps = 0
     i = 0
-    pixel_cm_ratio = None
+    pixel_cm_ratio = 0
     # while cap.isOpened():
     while True:
         if i == 1:
@@ -239,7 +236,7 @@ def main(net_in_conn, net_out_conn):
             pass
         with timer.counter('save_img'):
             frame_numpy = draw_img(pixel_cm_ratio, ids_p, class_p, boxes_p, masks_p, frame_origin, cfg, fps=t_fps)
-        
+        pixel_cm_ratio = 0
 
         if cfg.real_time:
             cv2.imshow('Detection', cv2.resize(frame_numpy,(frame_numpy.shape[1]*2,frame_numpy.shape[0]*2)) )
