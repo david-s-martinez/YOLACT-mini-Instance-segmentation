@@ -14,6 +14,7 @@ from utils import timer
 from utils.output_utils import nms, after_nms
 from utils.common_utils import ProgressBar
 from utils.augmentations import val_aug
+import multiprocessing
 from multiprocessing import Process
 from multiprocessing import Pipe
 
@@ -198,6 +199,7 @@ def main(net_in_conn, net_out_conn):
         cudnn.benchmark = True
         cudnn.fastest = True
         net = net.cuda()
+        print('Model running in gpu: ',next(net.parameters()).is_cuda)
 
     num_frames = net_in_conn.recv()['num_frames']
     progress_bar = ProgressBar(40, num_frames)
@@ -263,6 +265,8 @@ def main(net_in_conn, net_out_conn):
 
 def cam_reader(cam_out_conn, cam_source):
     cap = cv2.VideoCapture(cam_source)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,640);
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT,480);
     target_fps = round(cap.get(cv2.CAP_PROP_FPS))
     frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -296,7 +300,7 @@ def cam_reader(cam_out_conn, cam_source):
 if __name__ == '__main__':
     cam_source = 0
     # cam_source = 'http://192.168.1.137:8000/video'
-
+    multiprocessing.set_start_method('spawn')
     net_in_conn, cam_out_conn = Pipe()
     send_detect_in_conn, net_out_conn = Pipe()
 
