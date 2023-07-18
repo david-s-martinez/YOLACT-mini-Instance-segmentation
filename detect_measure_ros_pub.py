@@ -97,8 +97,9 @@ def measure_size(img, mask, ymin, ymax, xmin, xmax,pixel_cm_ratio):
         return object_dims, abs(angle)
 
 def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=None):
+    hand_opening = 'n'
     if ids_p is None:
-        return img_origin
+        return img_origin, hand_opening 
 
     if isinstance(ids_p, torch.Tensor):
         ids_p = ids_p.cpu().numpy()
@@ -139,7 +140,6 @@ def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img
     scale = 0.45
     thickness = 1
     font = cv2.FONT_HERSHEY_DUPLEX
-    hand_opening = 'n'
 
     if not cfg.hide_bbox:
         for i in reversed(range(num_detected)):
@@ -179,7 +179,7 @@ def draw_img(pixel_cm_ratio, ids_p, class_p, box_p, mask_p, img_origin, cfg, img
         # img_fused[0:text_h + 8, 0:text_w + 8] *= 0.6
         # img_fused = img_fused.astype(np.uint8)
         cv2.putText(img_fused, fps_str, (0, text_h + 2), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
-
+    # print(img_fused, hand_opening)
     return img_fused, hand_opening
 
 def main(net_in_conn, net_out_conn):
@@ -323,7 +323,7 @@ def post_detections(send_detect_in_conn):
 
 if __name__ == '__main__':
     cam_source = 0
-    # cam_source = 'http://192.168.178.41:8000/video'
+    cam_source = 'http://192.168.1.140:8000/video'
     multiprocessing.set_start_method('spawn')
     net_in_conn, cam_out_conn = Pipe()
     send_detect_in_conn, net_out_conn = Pipe()
