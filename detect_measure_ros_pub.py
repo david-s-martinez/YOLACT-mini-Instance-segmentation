@@ -256,7 +256,7 @@ def main(net_in_conn, net_out_conn):
         pixel_cm_ratio = 0
 
         if cfg.real_time:
-            cv2.imshow('Detection', cv2.resize(frame_numpy,(frame_numpy.shape[1]*2,frame_numpy.shape[0]*2)) )
+            cv2.imshow('Detection', cv2.resize(frame_numpy,(frame_numpy.shape[1]*5,frame_numpy.shape[0]*5)) )
             key = cv2.waitKey(10)
             if key == 27:
                 break
