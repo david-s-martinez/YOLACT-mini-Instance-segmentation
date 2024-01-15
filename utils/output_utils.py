@@ -305,7 +305,7 @@ def draw_lincomb(proto_data, masks, img_name):
         cv2.imwrite(f'results/images/lincomb_{img_name}', arr_img)
 
 
-def draw_img(ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=None):
+def draw_img(ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=None, filter_ids=False):
     if ids_p is None:
         return img_origin
 
@@ -314,13 +314,15 @@ def draw_img(ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=
         class_p = class_p.cpu().numpy()
         box_p = box_p.cpu().numpy()
         mask_p = mask_p.cpu().numpy()
-    idxs = np.in1d(ids_p, [39,64,67])
-    idxs = np.nonzero(idxs)
-    # print(idxs)
-    ids_p = ids_p[idxs]
-    class_p = class_p[idxs]
-    box_p =  box_p[idxs]
-    mask_p = mask_p[idxs]
+        
+    if filter_ids:
+        idxs = np.in1d(ids_p, [39,64,67])
+        idxs = np.nonzero(idxs)
+        # print(idxs)
+        ids_p = ids_p[idxs]
+        class_p = class_p[idxs]
+        box_p =  box_p[idxs]
+        mask_p = mask_p[idxs]
 
     num_detected = ids_p.shape[0]
     img_fused = img_origin
