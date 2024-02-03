@@ -3,8 +3,10 @@ import argparse
 import cv2
 import re
 import rospy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, PointCloud2
 from cv_bridge import CvBridge
+import sensor_msgs.point_cloud2 as pc2
+from std_msgs.msg import Header
 import torch
 import argparse
 import cv2
@@ -937,7 +939,6 @@ class ItemsDetector:
             np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]])
         )
         # Extract the region of interest using the mask
-        print(depth_frame.shape, mask.shape)
         masked_depth_frame = cv2.bitwise_and(depth_frame, depth_frame, mask=mask.astype(np.uint8))
 
         # Crop the region using the bounding box coordinates
@@ -1029,15 +1030,6 @@ class ItemsDetector:
             color_masks = COLORS[masks_semantic].astype("uint8")
             img_np_detect = cv2.addWeighted(color_masks, 0.4, rgb_frame, 0.6, gamma=0)
 
-        if depth_frame is not None:
-            depth_frame_norm = copy.deepcopy(depth_frame)
-            max_val = np.max(depth_frame_norm)
-            min_val = np.min(depth_frame_norm)
-            depth_frame_norm = (depth_frame_norm - min_val) * (255 / (max_val - min_val)) * (-1) + 255
-            depth_frame_norm = depth_frame_norm.astype(np.uint8)
-            depth_color = cv2.applyColorMap(depth_frame_norm, cv2.COLORMAP_JET)
-            # depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_HOT)
-            cv2.imshow('depth', depth_color)
 
         for i in reversed(range(num_detected)):
             # if int(ids_p[i]) in self.detect_classes:
@@ -1108,7 +1100,25 @@ class ItemsDetector:
                 # if is_cx_out_range:
                 #     continue
                 self.detected_objects.append(item)
-        return img_np_detect, self.detected_objects
+        if depth_frame is not None:
+            depth_frame_norm = copy.deepcopy(depth_frame)
+            max_val = np.max(depth_frame_norm)
+            min_val = np.min(depth_frame_norm)
+            depth_frame_norm = (depth_frame_norm - min_val) * (255 / (max_val - min_val)) * (-1) + 255
+            depth_frame_norm = depth_frame_norm.astype(np.uint8)
+            depth_color = cv2.applyColorMap(depth_frame_norm, cv2.COLORMAP_JET)
+            # depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_HOT)
+
+            combined_mask = np.sum(masks_p, axis=0)
+            print(combined_mask.shape)
+            masked_depth = cv2.bitwise_and(depth_frame, depth_frame, mask=combined_mask.astype(np.uint8))
+
+            cv2.imshow('depth', depth_color)
+            cv2.imshow('combined_mask', combined_mask)
+            cv2.imshow('masked_depth', masked_depth)
+            return img_np_detect, self.detected_objects, masked_depth
+        else:    
+            return img_np_detect, self.detected_objects, None
     
 class ObstacleDetection():
     def __init__(self, parser) -> None:
@@ -1122,13 +1132,46 @@ class ObstacleDetection():
         rospy.init_node('yolact_detector')
         rospy.Subscriber("/xtion/rgb/image_raw", Image, self.image_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.depth_callback)
+        self.depth_pub = rospy.Publisher('/xtion/depth/image_detected', Image, queue_size=10)
+        # self.pointcloud_pub = rospy.Publisher('/detections_point_cloud', PointCloud2, queue_size=10)
 
         try:
             rospy.spin()
         except KeyboardInterrupt:
             print("Shutting down")
             cv2.destroyAllWindows()
+
+    def generate_point_cloud(self, depth_image):
+        # Generate 3D points from the depth image (You need to implement this)
+        # For demonstration, we are generating a simple point cloud with random points
+        # Replace this with your actual logic to convert the depth image to point cloud
+        # Make sure to adjust the header frame_id and other metadata accordingly
+        
+        points = []
+        for y in range(depth_image.shape[0]):
+            for x in range(depth_image.shape[1]):
+                depth = depth_image[y, x]
+                # Ignore invalid depth values (you may need to adjust this threshold)
+                if depth > 0:
+                    # Convert pixel coordinates to 3D coordinates using camera intrinsics
+                    # Here, we assume a simple perspective projection
+                    point = (x, y, depth)
+                    points.append(point)
+        header = Header()
+        header.frame_id = 'xtion_rgb_optical_frame'
+        header.stamp = rospy.Time.now()
+        return pc2.create_cloud_xyz32(header, points)
     
+    def publish_depth_image(self, depth_image):
+        # Convert the depth image to ROS Image message
+        depth_image_msg = CvBridge().cv2_to_imgmsg(depth_image, encoding="passthrough")
+        header = Header()
+        header.frame_id = 'xtion_rgb_optical_frame'
+        header.stamp = rospy.Time.now()
+        depth_image_msg.header = header
+        # Publish the depth image
+        self.depth_pub.publish(depth_image_msg)
+
     def detect_body_pose(self, frame):
         # Convert the frame to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1150,7 +1193,13 @@ class ObstacleDetection():
         frame_origin = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
         self.detect_body_pose(frame_origin)
 
-        img_np_detect, detected_objects = self.detector.deep_item_detector(frame_origin,self.depth_frame,0.0)
+        img_np_detect, detected_objects, masked_depth = self.detector.deep_item_detector(frame_origin,self.depth_frame,0.0)
+
+        if masked_depth is not None:
+            self.publish_depth_image(masked_depth)
+            # point_cloud_msg = self.generate_point_cloud(masked_depth)
+            # self.pointcloud_pub.publish(point_cloud_msg)
+
         tracked_items, _ = self.tracker.update(detected_objects, img_np_detect)
 
         print({iD:item.centroid_px for iD,item in tracked_items.items()})
