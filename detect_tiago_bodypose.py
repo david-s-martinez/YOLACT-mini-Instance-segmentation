@@ -940,7 +940,7 @@ class ItemsDetector:
         contours, _ = cv2.findContours(
             mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        cv2.drawContours(img, contours, -1, (0, 255, 0), 3) 
+        # cv2.drawContours(img, contours, -1, (0, 255, 0), 3) 
         # for cnt in contours:
         #     area = cv2.contourArea(cnt)
         #     if area > self.cnt_area_low_thresh and area < self.cnt_area_up_thresh:
@@ -1092,45 +1092,83 @@ class ItemsDetector:
                 self.detected_objects.append(item)
         return img_np_detect, self.detected_objects
     
-def detect_body_pose(frame, mp_pose, pose, mp_drawing):
-    # Convert the frame to RGB
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+class ObstacleDetection():
+    def __init__(self, parser) -> None:
+        self.depth_frame = None
+        # Initialize MediaPipe Drawing module
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose()
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.detector = ItemsDetector(parser)
+        self.tracker = DetectionTracker(10)
+        rospy.init_node('yolact_detector')
+        rospy.Subscriber("/xtion/rgb/image_raw", Image, self.image_callback)
+        rospy.Subscriber("/xtion/depth/image_raw", Image, self.depth_callback)
 
-    # Process the frame to detect pose
-    results = pose.process(frame_rgb)
-    # Draw landmarks on the frame
-    if results.pose_landmarks:
-        mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        try:
+            rospy.spin()
+        except KeyboardInterrupt:
+            print("Shutting down")
+            cv2.destroyAllWindows()
+    
+    def detect_body_pose(self, frame):
+        # Convert the frame to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # Display the frame
-    cv2.imshow('Body Pose Detection', frame)
+        # Process the frame to detect pose
+        results = self.pose.process(frame_rgb)
+        # Draw landmarks on the frame
+        if results.pose_landmarks:
+            self.mp_drawing.draw_landmarks(frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
 
-def image_callback(msg):
-    frame_origin = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
-    detect_body_pose(frame_origin, mp_pose, pose, mp_drawing)
-    img_np_detect, detected_objects = detector.deep_item_detector(frame_origin,0.0)
-    print(len(detected_objects))
-    tracked_items, _ = tracker.update(detected_objects, img_np_detect)
-    print({iD:item.centroid_px for iD,item in tracked_items.items()})
-    scale = 0.6
-    thickness = 1
-    font = cv2.FONT_HERSHEY_DUPLEX
-    for iD,item in tracked_items.items():
-        cv2.putText(
-                        img_np_detect,
-                        str(iD),
-                        item.centroid_px,
-                        font,
-                        scale,
-                        (255, 255, 255),
-                        1,
-                        cv2.LINE_AA,
-                    )
-        cv2.circle(img_np_detect, item.centroid_px, radius=3, color=(0, 0, 255), thickness=-1)
-    cv2.imshow('detections', img_np_detect)
-    key = cv2.waitKey(10)
-    if key == 27:
-        rospy.signal_shutdown('User requested shutdown')
+        # Display the frame
+        cv2.imshow('Body Pose Detection', frame)
+
+    def depth_callback(self,msg):
+        self.depth_frame = CvBridge().imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        
+
+    def image_callback(self, msg):
+        frame_origin = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        self.detect_body_pose(frame_origin)
+
+        img_np_detect, detected_objects = self.detector.deep_item_detector(frame_origin,0.0)
+        tracked_items, _ = self.tracker.update(detected_objects, img_np_detect)
+
+        print({iD:item.centroid_px for iD,item in tracked_items.items()})
+        scale = 0.6
+        thickness = 1
+        font = cv2.FONT_HERSHEY_DUPLEX
+        depth = 0.0
+        
+        for iD,item in tracked_items.items():
+            if self.depth_frame is not None:
+                depth_frame = self.depth_frame
+                depth = depth_frame[item.centroid_px.y,item.centroid_px.x]/1000
+                max_val = np.max(depth_frame)
+                min_val = np.min(depth_frame)
+                depth_frame = (depth_frame - min_val) * (255 / (max_val - min_val)) * (-1) + 255
+                depth_frame = depth_frame.astype(np.uint8)
+                depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_JET)
+                # depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_HOT)
+                cv2.imshow('depth', depth_color)
+                
+            cv2.putText(
+                            img_np_detect,
+                            str(iD)+" "+str(depth),
+                            item.centroid_px,
+                            font,
+                            scale,
+                            (255, 255, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+            cv2.circle(img_np_detect, item.centroid_px, radius=3, color=(0, 0, 255), thickness=-1)
+        cv2.imshow('detections', img_np_detect)
+            
+        key = cv2.waitKey(10)
+        if key == 27:
+            rospy.signal_shutdown('User requested shutdown')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='YOLACT Detection.')
@@ -1147,19 +1185,4 @@ if __name__ == '__main__':
     parser.add_argument('--real_time', default=True, action='store_true', help='Show the detection results real-timely.')
     parser.add_argument('--visual_thre', default=0.5, type=float,
                         help='Detections with a score under this threshold will be removed.')
-
-    # Initialize MediaPipe Drawing module
-    mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose()
-    mp_drawing = mp.solutions.drawing_utils
-    detector = ItemsDetector(parser)
-    tracker = DetectionTracker(10)
-    rospy.init_node('yolact_detector')
-    rospy.Subscriber("/xtion/rgb/image_raw", Image, image_callback)
-    # rospy.Subscriber("/xtion/depth/image_raw", Image, image_callback)
-
-    try:
-        rospy.spin()
-    except KeyboardInterrupt:
-        print("Shutting down")
-        cv2.destroyAllWindows()
+    ObstacleDetection(parser)
