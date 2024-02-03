@@ -36,9 +36,230 @@ import torch.nn.functional as F
 import numpy as np
 from math import sqrt
 from collections import namedtuple
-
-
+import numpy as np
+from collections import OrderedDict
+from scipy.spatial import distance as dist
+import copy
 CM2MM = 10
+
+class DetectionTracker:
+    """
+    Class for tracking Detections between frames.
+    """
+
+    def __init__(
+        self, maxDisappeared: int, guard: int = 250, maxCentroidDistance: int = 100
+    ):
+        """
+        DetectionTracker object constructor.
+
+        Args:
+            maxDisappeared (int): Maximum number of frames before deregister.
+            guard (int): When Detection depth is cropped, the resulting crop will have 'guard' extra pixels on each side.
+            maxCentroidDistance (int): Maximal distance which Detection can travel when it disappears in frame pixels.
+        """
+
+        self.nextObjectID = 0
+        self.Detections = OrderedDict()
+
+        self.guard = guard
+        self.maxCentroidDistance = maxCentroidDistance
+
+        # Maximum consecutive frames a given object is allowed to be marked as "disappeared"
+        self.maxDisappeared = maxDisappeared
+
+    def register(self, Detection, frame: np.ndarray):
+        """
+        Registers input item.
+
+        Args:
+            Detection (Detection): Detection object to be registered.
+            frame (np.ndarray): Image frame.
+        """
+
+        # When registering an object we use the next available object
+        # ID to store the Detection
+        self.Detections[self.nextObjectID] = Detection
+        self.Detections[self.nextObjectID].disappeared = 0
+
+        crop = self.get_crop_from_frame(self.Detections[self.nextObjectID], frame)
+        self.Detections[self.nextObjectID].depth_maps = crop
+        self.Detections[self.nextObjectID].id = self.nextObjectID  # ! only for itemObject
+        self.nextObjectID += 1
+
+    def deregister(self, objectID: str):
+        """
+        Deregisters object based on id.
+
+        Args:
+            objectID (str): Key to deregister items in the objects dict.
+        """
+
+        # Save and return copy of deregistered Detection data
+        deregistered_Detection = copy.deepcopy(self.Detections[objectID])
+        # To deregister an object ID we delete the object ID from our dictionary
+        del self.Detections[objectID]
+        return deregistered_Detection
+
+    def get_crop_from_frame(self, Detection, frame: np.ndarray):
+        """
+        Cuts Detection out of the image frame.
+
+        Args:
+            Detection (Detection): Detection object to be cut out.
+            frame (np.ndarray): Image frame from which the Detection should be cut out.
+
+        Returns:
+            np.ndarray: Detection cutout.
+        """
+
+        # Get Detection specific crop from frame
+        crop = frame[
+            (Detection.centroid_px.y - int(Detection.height / 2) - self.guard) : (
+                Detection.centroid_px.y + int(Detection.height / 2) + self.guard
+            ),
+            (Detection.centroid_px.x - int(Detection.width / 2) - self.guard) : (
+                Detection.centroid_px.x + int(Detection.width / 2) + self.guard
+            ),
+        ]
+        crop = np.expand_dims(crop, axis=2)
+        return crop
+
+    def update(
+        self, detected_Detections: list, frame: np.ndarray
+    ) -> tuple:
+        """
+        Updates the currently tracked detections.
+
+        Args:
+            detected_Detections (list[Detection]): List containing detected Detection objects to be tracked.
+            frame (np.ndarray): Image frame.
+
+        Returns:
+            OrderedDict: Ordered dictionary with tracked detections.
+            list[Detection]: List of Detections that were deregistered.
+        """
+
+        deregistered_Detections = []
+        # check to see if the list of input bounding box rectangles
+        # is empty
+        if len(detected_Detections) == 0:
+            # loop over any existing tracked objects and mark them
+            # as disappeared
+            for objectID in list(self.Detections.keys()):
+                self.Detections[objectID].disappeared += 1
+                # if we have reached a maximum number of consecutive
+                # frames where a given object has been marked as
+                # missing, deregister it
+                if self.Detections[objectID].disappeared > self.maxDisappeared:
+                    deregistered_Detection = self.deregister(objectID)
+                    deregistered_Detections.append(deregistered_Detection)
+            # return early as there are no centroids or tracking info
+            # to update
+            return self.Detections, deregistered_Detections
+
+        # if we are currently not tracking any objects take the input
+        # centroids and register each of them
+        if len(self.Detections) == 0:
+            for i in range(0, len(detected_Detections)):
+                self.register(detected_Detections[i], frame)
+
+        # otherwise, are are currently tracking objects so we need to
+        # try to match the input centroids to existing object
+        # centroids
+        else:
+            # grab the set of object IDs and corresponding centroids
+            objectIDs = list(self.Detections.keys())
+            objectCentroids = [
+                self.Detections[key].centroid_px for key in list(self.Detections.keys())
+            ]
+            inputCentroids = [Detection.centroid_px for Detection in detected_Detections]
+            # compute the distance between each pair of object
+            # centroids and input centroids, respectively -- our
+            # goal will be to match an input centroid to an existing
+            # object centroid
+            D = dist.cdist(np.array(objectCentroids), inputCentroids)
+            # in order to perform this matching we must (1) find the
+            # smallest value in each row and then (2) sort the row
+            # indexes based on their minimum values so that the row
+            # with the smallest value is at the *front* of the index
+            # list
+            rows = D.min(axis=1).argsort()
+            # next, we perform a similar process on the columns by
+            # finding the smallest value in each column and then
+            # sorting using the previously computed row index list
+            cols = D.argmin(axis=1)[rows]
+
+            # in order to determine if we need to update, register,
+            # or deregister an object we need to keep track of which
+            # of the rows and column indexes we have already examined
+            usedRows = set()
+            usedCols = set()
+            # loop over the combination of the (row, column) index
+            # tuples
+            for (row, col) in zip(rows, cols):
+                # if we have already examined either the row or
+                # column value before, ignore it
+                if row in usedRows or col in usedCols:
+                    continue
+                # if D[row, col] > self.maxCentroidDistance:
+                #     self.register(detected_Detections[col], frame)
+                #     continue
+
+                # otherwise, grab the object ID for the current row,
+                # set its new centroid, and reset the disappeared
+                # counter
+                objectID = objectIDs[row]
+
+                self.Detections[objectID].centroid_px = detected_Detections[col].centroid_px
+                # self.Detections[objectID].angles.append(detected_Detections[col].angles[0])
+                self.Detections[objectID].disappeared = 0
+
+                crop = self.get_crop_from_frame(self.Detections[objectID], frame)
+
+                if crop.shape[0:2] == self.Detections[objectID].depth_maps[:, :, 0].shape:
+                    self.Detections[objectID].depth_maps = np.concatenate(
+                        (self.Detections[objectID].depth_maps, crop), axis=2
+                    )
+
+                # indicate that we have examined each of the row and
+                # column indexes, respectively
+                usedRows.add(row)
+                usedCols.add(col)
+
+            # compute both the row and column index we have NOT yet
+            # examined
+            unusedRows = set(range(0, D.shape[0])).difference(usedRows)
+            unusedCols = set(range(0, D.shape[1])).difference(usedCols)
+
+            # in the event that the number of object centroids is
+            # equal or greater than the number of input centroids
+            # we need to check and see if some of these objects have
+            # potentially disappeared
+            if D.shape[0] >= D.shape[1]:
+                # loop over the unused row indexes
+                for row in unusedRows:
+                    # grab the object ID for the corresponding row
+                    # index and increment the disappeared counter
+                    objectID = objectIDs[row]
+                    self.Detections[objectID].disappeared += 1
+
+                    # check to see if the number of consecutive
+                    # frames the object has been marked "disappeared"
+                    # for warrants deregistering the object
+                    if self.Detections[objectID].disappeared > self.maxDisappeared:
+                        deregistered_Detection = self.deregister(objectID)
+                        deregistered_Detections.append(deregistered_Detection)
+
+            # otherwise, if the number of input centroids is greater
+            # than the number of existing object centroids we need to
+            # register each new input centroid as a trackable object
+            else:
+                for col in unusedCols:
+                    self.register(detected_Detections[col], frame)
+
+        # return the set of trackable objects
+        return self.Detections, deregistered_Detections
 
 class Detection:
     """
@@ -859,15 +1080,15 @@ class ItemsDetector:
                 item = self.get_item_from_mask(
                     img_np_detect, bbox, masks_p[i], int(ids_p[i]), encoder_pos
                 )
-                is_cx_low_ok = (
-                    item.centroid_px.x - item.width / 2 < self.ignore_horizontal_px
-                )
-                is_cx_up_ok = item.centroid_px.x + item.width / 2 > (
-                    img_w - self.ignore_horizontal_px
-                )
-                is_cx_out_range = is_cx_low_ok or is_cx_up_ok
-                if is_cx_out_range:
-                    continue
+                # is_cx_low_ok = (
+                #     item.centroid_px.x - item.width / 2 < self.ignore_horizontal_px
+                # )
+                # is_cx_up_ok = item.centroid_px.x + item.width / 2 > (
+                #     img_w - self.ignore_horizontal_px
+                # )
+                # is_cx_out_range = is_cx_low_ok or is_cx_up_ok
+                # if is_cx_out_range:
+                #     continue
                 self.detected_objects.append(item)
         return img_np_detect, self.detected_objects
     
@@ -888,6 +1109,24 @@ def image_callback(msg):
     frame_origin = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
     detect_body_pose(frame_origin, mp_pose, pose, mp_drawing)
     img_np_detect, detected_objects = detector.deep_item_detector(frame_origin,0.0)
+    print(len(detected_objects))
+    tracked_items, _ = tracker.update(detected_objects, img_np_detect)
+    print({iD:item.centroid_px for iD,item in tracked_items.items()})
+    scale = 0.6
+    thickness = 1
+    font = cv2.FONT_HERSHEY_DUPLEX
+    for iD,item in tracked_items.items():
+        cv2.putText(
+                        img_np_detect,
+                        str(iD),
+                        item.centroid_px,
+                        font,
+                        scale,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+        cv2.circle(img_np_detect, item.centroid_px, radius=3, color=(0, 0, 255), thickness=-1)
     cv2.imshow('detections', img_np_detect)
     key = cv2.waitKey(10)
     if key == 27:
@@ -914,8 +1153,10 @@ if __name__ == '__main__':
     pose = mp_pose.Pose()
     mp_drawing = mp.solutions.drawing_utils
     detector = ItemsDetector(parser)
+    tracker = DetectionTracker(10)
     rospy.init_node('yolact_detector')
     rospy.Subscriber("/xtion/rgb/image_raw", Image, image_callback)
+    # rospy.Subscriber("/xtion/depth/image_raw", Image, image_callback)
 
     try:
         rospy.spin()
