@@ -913,7 +913,7 @@ class ItemsDetector:
         return img_fused
 
     def get_item_from_mask(
-        self, img: np.array, bbox: dict, mask: np.array, type: int, encoder_pos: float
+        self, img: np.array, bbox: dict, mask: np.array, depth_frame: np.array,type: int,
     ):
         """
         Creates object inner rectangle given the mask from neural net.
@@ -923,7 +923,6 @@ class ItemsDetector:
             bbox (dict): bounding box parameters.
             mask (np.array): mask produced by neural net.
             type (int): Type of the item.
-            encoder_pos (float): Position of the encoder.
 
         Returns:
             Detection: Created Detection object
@@ -937,24 +936,26 @@ class ItemsDetector:
         box = np.int64(
             np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]])
         )
+        # Extract the region of interest using the mask
+        print(depth_frame.shape, mask.shape)
+        masked_depth_frame = cv2.bitwise_and(depth_frame, depth_frame, mask=mask.astype(np.uint8))
+
+        # Crop the region using the bounding box coordinates
+        cropped_depth_frame = masked_depth_frame[ymin:ymax, xmin:xmax,...]
+
+        # Display the cropped depth frame
+        cv2.imshow('cropped_depth_frame', cropped_depth_frame)
+
+        cv2.imshow('mask', mask)
         contours, _ = cv2.findContours(
             mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        # cv2.drawContours(img, contours, -1, (0, 255, 0), 3) 
-        # for cnt in contours:
-        #     area = cv2.contourArea(cnt)
-        #     if area > self.cnt_area_low_thresh and area < self.cnt_area_up_thresh:
-        #         rectangle = cv2.minAreaRect(cnt)
-        #         centroid = (int(rectangle[0][0]), int(rectangle[0][1]))
-        #         box = np.int0(cv2.boxPoints(rectangle))
-        #         angle = int(rectangle[2])
+        # cv2.drawContours(img, contours, -1, (0, 255, 0), 3)
 
-        # cv2.polylines(img, [box], True, (255, 0, 0), 3)
         item = Detection()
 
         item.set_type(type)
         item.set_centroid(centroid[0], centroid[1])
-        item.set_base_encoder_position(encoder_pos)
         item.set_bounding_size(bbox["w"], bbox["h"])
         item.add_angle_to_average(angle)
 
@@ -963,6 +964,7 @@ class ItemsDetector:
     def deep_item_detector(
         self,
         rgb_frame: np.ndarray,
+        depth_frame: np.ndarray,
         encoder_pos: float,
         draw_box: bool = True,
         image_frame: np.ndarray = None,
@@ -1027,13 +1029,24 @@ class ItemsDetector:
             color_masks = COLORS[masks_semantic].astype("uint8")
             img_np_detect = cv2.addWeighted(color_masks, 0.4, rgb_frame, 0.6, gamma=0)
 
+        if depth_frame is not None:
+            depth_frame_norm = copy.deepcopy(depth_frame)
+            max_val = np.max(depth_frame_norm)
+            min_val = np.min(depth_frame_norm)
+            depth_frame_norm = (depth_frame_norm - min_val) * (255 / (max_val - min_val)) * (-1) + 255
+            depth_frame_norm = depth_frame_norm.astype(np.uint8)
+            depth_color = cv2.applyColorMap(depth_frame_norm, cv2.COLORMAP_JET)
+            # depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_HOT)
+            cv2.imshow('depth', depth_color)
+
         for i in reversed(range(num_detected)):
             # if int(ids_p[i]) in self.detect_classes:
+                text_str = ""
                 xmin, ymin, xmax, ymax = boxes_p[i, :]
                 w = int(xmax - xmin)
                 h = int(ymax - ymin)
-                cx, cy = (xmax + xmin) / 2, (ymax + ymin) / 2
-                centroid = (int(cx), int(cy))
+                cx, cy = int((xmax + xmin) / 2), int((ymax + ymin) / 2)
+                centroid = (cx, cy)
 
                 bbox = {
                     "xmin": xmin,
@@ -1044,6 +1057,11 @@ class ItemsDetector:
                     "w": w,
                     "h": h,
                 }
+
+                if depth_frame is not None:
+                    depth = depth_frame[cy,cx]/1000
+                    text_str += str(depth)
+
                 if not self.cfg.hide_bbox:
                     color = COLORS[ids_p[i] + 1].tolist()
                     cv2.rectangle(
@@ -1051,8 +1069,8 @@ class ItemsDetector:
                     )
 
                     class_name = self.cfg.class_names[ids_p[i]]
-                    text_str = (
-                        f"{class_name}: {class_p[i]:.2f}"
+                    text_str += (
+                        f" {class_name}: {class_p[i]:.2f}"
                         if not self.cfg.hide_score
                         else class_name
                     )
@@ -1078,7 +1096,7 @@ class ItemsDetector:
                         cv2.LINE_AA,
                     )
                 item = self.get_item_from_mask(
-                    img_np_detect, bbox, masks_p[i], int(ids_p[i]), encoder_pos
+                    img_np_detect, bbox, masks_p[i], depth_frame ,int(ids_p[i])
                 )
                 # is_cx_low_ok = (
                 #     item.centroid_px.x - item.width / 2 < self.ignore_horizontal_px
@@ -1132,7 +1150,7 @@ class ObstacleDetection():
         frame_origin = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
         self.detect_body_pose(frame_origin)
 
-        img_np_detect, detected_objects = self.detector.deep_item_detector(frame_origin,0.0)
+        img_np_detect, detected_objects = self.detector.deep_item_detector(frame_origin,self.depth_frame,0.0)
         tracked_items, _ = self.tracker.update(detected_objects, img_np_detect)
 
         print({iD:item.centroid_px for iD,item in tracked_items.items()})
@@ -1140,22 +1158,11 @@ class ObstacleDetection():
         thickness = 1
         font = cv2.FONT_HERSHEY_DUPLEX
         depth = 0.0
-        
-        for iD,item in tracked_items.items():
-            if self.depth_frame is not None:
-                depth_frame = self.depth_frame
-                depth = depth_frame[item.centroid_px.y,item.centroid_px.x]/1000
-                max_val = np.max(depth_frame)
-                min_val = np.min(depth_frame)
-                depth_frame = (depth_frame - min_val) * (255 / (max_val - min_val)) * (-1) + 255
-                depth_frame = depth_frame.astype(np.uint8)
-                depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_JET)
-                # depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_HOT)
-                cv2.imshow('depth', depth_color)
-                
+
+        for iD,item in tracked_items.items():     
             cv2.putText(
                             img_np_detect,
-                            str(iD)+" "+str(depth),
+                            str(iD),
                             item.centroid_px,
                             font,
                             scale,
