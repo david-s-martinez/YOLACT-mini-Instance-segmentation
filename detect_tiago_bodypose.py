@@ -1082,12 +1082,15 @@ class ObstacleDetection():
         rospy.init_node('yolact_detector')
         rospy.Subscriber("/xtion/rgb/image_raw", Image, self.image_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.depth_callback)
-        rospy.Subscriber("/xtion/depth/image_raw", Image, self.point_callback)
+        rospy.Subscriber("/xtion/depth/image_raw", Image, self.pick_point_callback)
+        rospy.Subscriber("/xtion/depth/image_raw", Image, self.goal_point_callback)
         self.info_sub = rospy.Subscriber('/xtion/depth/camera_info', CameraInfo, self.camera_info_callback)
         self.depth_pub = rospy.Publisher('/xtion/depth/image_detected', Image, queue_size=10)
-        self.point_pub = rospy.Publisher('/depth_point', PointStamped, queue_size=10)
+        self.pick_point_pub = rospy.Publisher('/pick_point', PointStamped, queue_size=10)
+        self.goal_point_pub = rospy.Publisher('/goal_point', PointStamped, queue_size=10)
         # self.pointcloud_pub = rospy.Publisher('/detections_point_cloud', PointCloud2, queue_size=10)
         self.point_to_pick = None
+        self.goal_point = None
         try:
             rospy.spin()
         except KeyboardInterrupt:
@@ -1108,7 +1111,25 @@ class ObstacleDetection():
         # self.cy,
         # )
 
-    def point_callback(self, depth_image_msg):
+    def create_point_msg(self, x, y, z, header):
+        # Convert pixel coordinates to camera coordinates
+        x_cam = (x - self.cx) / self.fx * z
+        y_cam = (y - self.cy) / self.fy * z
+        z_cam = z
+
+        # Create a PointStamped message and set the header
+        point_msg = PointStamped()
+        point_msg.header = header
+        point_msg.header.stamp = rospy.Time.now()  # Set the timestamp
+
+        # Set the coordinates
+        point_msg.point.x = x_cam
+        point_msg.point.y = y_cam
+        point_msg.point.z = z_cam
+
+        return point_msg
+    
+    def pick_point_callback(self, depth_image_msg):
         # Convert the depth image message to a NumPy array
         depth_image = self.bridge.imgmsg_to_cv2(depth_image_msg, desired_encoding='passthrough')
         if self.point_to_pick is not None:
@@ -1117,23 +1138,24 @@ class ObstacleDetection():
             y = self.point_to_pick[1]
             depth_value = depth_image[y, x]/1000  # Assuming the depth image is in meters
 
-            # Convert pixel coordinates to camera coordinates
-            x_cam = (x - self.cx) / self.fx * depth_value
-            y_cam = (y - self.cy) / self.fy * depth_value
-            z_cam = depth_value
-
-            # Create a PointStamped message and set the header
-            point_msg = PointStamped()
-            point_msg.header = depth_image_msg.header
-            point_msg.header.stamp = rospy.Time.now()  # Set the timestamp
-
-            # Set the coordinates
-            point_msg.point.x = x_cam
-            point_msg.point.y = y_cam
-            point_msg.point.z = z_cam
+            point_msg = self.create_point_msg(x, y, depth_value, depth_image_msg.header)
 
             # Publish the transformed point
-            self.point_pub.publish(point_msg)
+            self.pick_point_pub.publish(point_msg)
+
+    def goal_point_callback(self, depth_image_msg):
+        # Convert the depth image message to a NumPy array
+        depth_image = self.bridge.imgmsg_to_cv2(depth_image_msg, desired_encoding='passthrough')
+        if self.goal_point is not None:
+            # Get depth value at pixel coordinates (x, y)
+            x = self.goal_point[0] # Example pixel coordinates
+            y = self.goal_point[1]
+            depth_value = depth_image[y, x]/1000  # Assuming the depth image is in meters
+
+            point_msg = self.create_point_msg(x, y, depth_value, depth_image_msg.header)
+
+            # Publish the transformed point
+            self.goal_point_pub.publish(point_msg)
 
     def generate_point_cloud(self, depth_image):
         # Generate 3D points from the depth image (You need to implement this)
@@ -1179,12 +1201,13 @@ class ObstacleDetection():
 
     def depth_callback(self,msg):
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        
 
+    def filter_by_class(self, detected_objects, classes):
+        return [item.centroid_px for item in detected_objects if item.class_name in classes]
+         
     def image_callback(self, msg):
         frame_origin = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         
-
         img_np_detect, detected_objects, masked_depth = self.detector.deep_item_detector(frame_origin, self.depth_frame,0.0)
 
         if masked_depth is not None:
@@ -1192,11 +1215,15 @@ class ObstacleDetection():
             # point_cloud_msg = self.generate_point_cloud(masked_depth)
             # self.pointcloud_pub.publish(point_cloud_msg)
         if detected_objects:
-            pick_points = [item.centroid_px for item in detected_objects if item.class_name in ('backpack','handbag','suitcase')]
+            pick_points = self.filter_by_class(detected_objects, ('backpack','handbag','suitcase'))
             self.point_to_pick = pick_points[0] if pick_points else None
+
+            goal_points = self.filter_by_class(detected_objects, ('person'))
+            self.goal_point = goal_points[0] if goal_points else None
         else: 
             self.point_to_pick = None
-
+            self.goal_point = None
+        
         tracked_items, _ = self.tracker.update(detected_objects, img_np_detect)
 
         print({iD:item.centroid_px for iD,item in tracked_items.items()})
