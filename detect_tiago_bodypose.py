@@ -291,6 +291,7 @@ class Detection:
 
         # Type of the detection
         self.type = None
+        self.class_name = None
 
         # X Y centroid value in frame pixels,
         # of the position where the detection last last detected by the camera.
@@ -369,6 +370,16 @@ class Detection:
             return
 
         self.id = detection_id
+
+    def set_class_name(self, class_name: str) -> None:
+        """
+        Sets class_name type.
+
+        Args:
+            class_name (str): Str. representing type of the detection.
+        """
+
+        self.class_name = class_name
 
     def set_type(self, detection_type: int) -> None:
         """
@@ -853,70 +864,8 @@ class ItemsDetector:
 
         return ids_p, class_p, box_p, masks
 
-    def draw_img(
-        self, ids_p, class_p, box_p, mask_p, img_origin, cfg, img_name=None, fps=None
-    ):
-
-        if ids_p is None:
-            return img_origin
-
-        if isinstance(ids_p, torch.Tensor):
-            ids_p = ids_p.cpu().numpy()
-            class_p = class_p.cpu().numpy()
-            box_p = box_p.cpu().numpy()
-            mask_p = mask_p.cpu().numpy()
-
-        num_detected = ids_p.shape[0]
-
-        img_fused = img_origin
-        if not cfg.hide_mask:
-            masks_semantic = mask_p * (
-                ids_p[:, None, None] + 1
-            )  # expand ids_p' shape for broadcasting
-            # The color of the overlap area is different because of the '%' operation.
-            masks_semantic = masks_semantic.astype("int").sum(axis=0) % (
-                cfg.num_classes - 1
-            )
-            color_masks = COLORS[masks_semantic].astype("uint8")
-            img_fused = cv2.addWeighted(color_masks, 0.4, img_origin, 0.6, gamma=0)
-
-        scale = 0.6
-        thickness = 1
-        font = cv2.FONT_HERSHEY_DUPLEX
-
-        if not cfg.hide_bbox:
-            for i in reversed(range(num_detected)):
-                x1, y1, x2, y2 = box_p[i, :]
-
-                color = COLORS[ids_p[i] + 1].tolist()
-                cv2.rectangle(img_fused, (x1, y1), (x2, y2), color, thickness)
-
-                class_name = cfg.class_names[ids_p[i]]
-                text_str = (
-                    f"{class_name}: {class_p[i]:.2f}"
-                    if not cfg.hide_score
-                    else class_name
-                )
-
-                text_w, text_h = cv2.getTextSize(text_str, font, scale, thickness)[0]
-                cv2.rectangle(
-                    img_fused, (x1, y1), (x1 + text_w, y1 + text_h + 5), color, -1
-                )
-                cv2.putText(
-                    img_fused,
-                    text_str,
-                    (x1, y1 + 15),
-                    font,
-                    scale,
-                    (255, 255, 255),
-                    thickness,
-                    cv2.LINE_AA,
-                )
-
-        return img_fused
-
     def get_item_from_mask(
-        self, img: np.array, bbox: dict, mask: np.array, depth_frame: np.array,type: int,
+        self, img: np.array, bbox: dict, mask: np.array, depth_frame: np.array,type: int, class_name : str
     ):
         """
         Creates object inner rectangle given the mask from neural net.
@@ -955,6 +904,7 @@ class ItemsDetector:
         item = Detection()
 
         item.set_type(type)
+        item.set_class_name(class_name)
         item.set_centroid(centroid[0], centroid[1])
         item.set_bounding_size(bbox["w"], bbox["h"])
         item.add_angle_to_average(angle)
@@ -1087,7 +1037,7 @@ class ItemsDetector:
                         cv2.LINE_AA,
                     )
                 item = self.get_item_from_mask(
-                    img_np_detect, bbox, masks_p[i], depth_frame ,int(ids_p[i])
+                    img_np_detect, bbox, masks_p[i], depth_frame ,int(ids_p[i]), class_name = self.cfg.class_names[ids_p[i]]
                 )
                 # is_cx_low_ok = (
                 #     item.centroid_px.x - item.width / 2 < self.ignore_horizontal_px
@@ -1242,7 +1192,8 @@ class ObstacleDetection():
             # point_cloud_msg = self.generate_point_cloud(masked_depth)
             # self.pointcloud_pub.publish(point_cloud_msg)
         if detected_objects:
-            self.point_to_pick = detected_objects[0].centroid_px
+            pick_points = [item.centroid_px for item in detected_objects if item.class_name in ('backpack','handbag','suitcase')]
+            self.point_to_pick = pick_points[0] if pick_points else None
         else: 
             self.point_to_pick = None
 
