@@ -3,7 +3,8 @@ import argparse
 import cv2
 import re
 import rospy
-from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs.msg import Image, PointCloud2, CameraInfo
+from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
 import sensor_msgs.point_cloud2 as pc2
 from std_msgs.msg import Header
@@ -945,9 +946,7 @@ class ItemsDetector:
         cropped_depth_frame = masked_depth_frame[ymin:ymax, xmin:xmax,...]
 
         # Display the cropped depth frame
-        cv2.imshow('cropped_depth_frame', cropped_depth_frame)
 
-        cv2.imshow('mask', mask)
         contours, _ = cv2.findContours(
             mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -1008,7 +1007,7 @@ class ItemsDetector:
         # img_np_detect = self.draw_img(ids_p, class_p, boxes_p, masks_p, rgb_frame, self.cfg)
 
         if ids_p is None:
-            return rgb_frame, self.detected_objects
+            return rgb_frame, self.detected_objects, None
 
         if isinstance(ids_p, torch.Tensor):
             ids_p = ids_p.cpu().numpy()
@@ -1114,32 +1113,77 @@ class ItemsDetector:
             masked_depth = cv2.bitwise_and(depth_frame, depth_frame, mask=combined_mask.astype(np.uint8))
 
             cv2.imshow('depth', depth_color)
-            cv2.imshow('combined_mask', combined_mask)
-            cv2.imshow('masked_depth', masked_depth)
+            # cv2.imshow('combined_mask', combined_mask)
+            # cv2.imshow('masked_depth', masked_depth)
             return img_np_detect, self.detected_objects, masked_depth
         else:    
             return img_np_detect, self.detected_objects, None
     
 class ObstacleDetection():
     def __init__(self, parser) -> None:
+        self.bridge = CvBridge()
         self.depth_frame = None
         # Initialize MediaPipe Drawing module
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose()
         self.mp_drawing = mp.solutions.drawing_utils
         self.detector = ItemsDetector(parser)
-        self.tracker = DetectionTracker(10)
+        self.tracker = DetectionTracker(20)
         rospy.init_node('yolact_detector')
         rospy.Subscriber("/xtion/rgb/image_raw", Image, self.image_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.depth_callback)
+        rospy.Subscriber("/xtion/depth/image_raw", Image, self.point_callback)
+        self.info_sub = rospy.Subscriber('/xtion/depth/camera_info', CameraInfo, self.camera_info_callback)
         self.depth_pub = rospy.Publisher('/xtion/depth/image_detected', Image, queue_size=10)
+        self.point_pub = rospy.Publisher('/depth_point', PointStamped, queue_size=10)
         # self.pointcloud_pub = rospy.Publisher('/detections_point_cloud', PointCloud2, queue_size=10)
-
+        self.point_to_pick = None
         try:
             rospy.spin()
         except KeyboardInterrupt:
             print("Shutting down")
             cv2.destroyAllWindows()
+
+    def camera_info_callback(self, msg):
+        # Extract camera intrinsic parameters from the CameraInfo message
+        self.fx = msg.K[0]
+        self.fy = msg.K[4]
+        self.cx = msg.K[2]
+        self.cy = msg.K[5]
+        
+        # print(
+        # self.fx,
+        # self.fy,
+        # self.cx,
+        # self.cy,
+        # )
+
+    def point_callback(self, depth_image_msg):
+        # Convert the depth image message to a NumPy array
+        depth_image = self.bridge.imgmsg_to_cv2(depth_image_msg, desired_encoding='passthrough')
+        if self.point_to_pick is not None:
+            # Get depth value at pixel coordinates (x, y)
+            x = self.point_to_pick[0] # Example pixel coordinates
+            y = self.point_to_pick[1]
+            depth_value = depth_image[y, x]/1000  # Assuming the depth image is in meters
+
+            # Convert pixel coordinates to camera coordinates
+            x_cam = (x - self.cx) / self.fx * depth_value
+            y_cam = (y - self.cy) / self.fy * depth_value
+            z_cam = depth_value
+
+            # Create a PointStamped message and set the header
+            point_msg = PointStamped()
+            point_msg.header = depth_image_msg.header
+            point_msg.header.stamp = rospy.Time.now()  # Set the timestamp
+
+            # Set the coordinates
+            point_msg.point.x = x_cam
+            point_msg.point.y = y_cam
+            point_msg.point.z = z_cam
+
+            # Publish the transformed point
+            self.point_pub.publish(point_msg)
 
     def generate_point_cloud(self, depth_image):
         # Generate 3D points from the depth image (You need to implement this)
@@ -1164,7 +1208,7 @@ class ObstacleDetection():
     
     def publish_depth_image(self, depth_image):
         # Convert the depth image to ROS Image message
-        depth_image_msg = CvBridge().cv2_to_imgmsg(depth_image, encoding="passthrough")
+        depth_image_msg = self.bridge.cv2_to_imgmsg(depth_image, encoding="passthrough")
         header = Header()
         header.frame_id = 'xtion_rgb_optical_frame'
         header.stamp = rospy.Time.now()
@@ -1172,33 +1216,35 @@ class ObstacleDetection():
         # Publish the depth image
         self.depth_pub.publish(depth_image_msg)
 
-    def detect_body_pose(self, frame):
+    def detect_body_pose(self, raw_frame, draw_frame):
         # Convert the frame to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.cvtColor(copy.deepcopy(raw_frame), cv2.COLOR_BGR2RGB)
 
         # Process the frame to detect pose
         results = self.pose.process(frame_rgb)
         # Draw landmarks on the frame
         if results.pose_landmarks:
-            self.mp_drawing.draw_landmarks(frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
-
-        # Display the frame
-        cv2.imshow('Body Pose Detection', frame)
+            self.mp_drawing.draw_landmarks(draw_frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
+        return draw_frame
 
     def depth_callback(self,msg):
-        self.depth_frame = CvBridge().imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
         
 
     def image_callback(self, msg):
-        frame_origin = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        self.detect_body_pose(frame_origin)
+        frame_origin = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        
 
-        img_np_detect, detected_objects, masked_depth = self.detector.deep_item_detector(frame_origin,self.depth_frame,0.0)
+        img_np_detect, detected_objects, masked_depth = self.detector.deep_item_detector(frame_origin, self.depth_frame,0.0)
 
         if masked_depth is not None:
             self.publish_depth_image(masked_depth)
             # point_cloud_msg = self.generate_point_cloud(masked_depth)
             # self.pointcloud_pub.publish(point_cloud_msg)
+        if detected_objects:
+            self.point_to_pick = detected_objects[0].centroid_px
+        else: 
+            self.point_to_pick = None
 
         tracked_items, _ = self.tracker.update(detected_objects, img_np_detect)
 
@@ -1220,9 +1266,11 @@ class ObstacleDetection():
                             cv2.LINE_AA,
                         )
             cv2.circle(img_np_detect, item.centroid_px, radius=3, color=(0, 0, 255), thickness=-1)
+
+        img_np_detect = self.detect_body_pose(frame_origin, img_np_detect)
         cv2.imshow('detections', img_np_detect)
             
-        key = cv2.waitKey(10)
+        key = cv2.waitKey(1)
         if key == 27:
             rospy.signal_shutdown('User requested shutdown')
 
