@@ -915,7 +915,9 @@ class ItemsDetector:
             mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         # cv2.drawContours(draw_frame, contours, -1, (0, 255, 0), 3)
-        if class_name == 'person':
+        is_person_present = class_name == 'person'and (2.0 > depth_frame[centroid[1],centroid[0]]/1000 > 1.0)
+        if is_person_present:
+            print("My Human is found!")
             canvas = np.zeros_like(raw_img)
             canvas[ymin:ymax, xmin:xmax,...] = raw_img[ymin:ymax, xmin:xmax,...]
             self.detect_body_pose(canvas, draw_frame)
@@ -1205,17 +1207,6 @@ class ObstacleDetection():
         depth_image_msg.header = header
         # Publish the depth image
         self.depth_pub.publish(depth_image_msg)
-
-    def detect_body_pose(self, raw_frame, draw_frame):
-        # Convert the frame to RGB
-        frame_rgb = cv2.cvtColor(copy.deepcopy(raw_frame), cv2.COLOR_BGR2RGB)
-
-        # Process the frame to detect pose
-        results = self.pose.process(frame_rgb)
-        # Draw landmarks on the frame
-        if results.pose_landmarks:
-            self.mp_drawing.draw_landmarks(draw_frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
-        return draw_frame
 
     def depth_callback(self,msg):
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
