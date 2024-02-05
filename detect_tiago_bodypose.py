@@ -7,7 +7,7 @@ from sensor_msgs.msg import Image, PointCloud2, CameraInfo
 from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
 import sensor_msgs.point_cloud2 as pc2
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 import torch
 import argparse
 import cv2
@@ -697,6 +697,11 @@ class ItemsDetector:
         self.cnt_area_up_thresh = cnt_area_up_thresh
         self.cnt_area_low_thresh = cnt_area_low_thresh
 
+        # Initialize MediaPipe Drawing module
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose()
+        self.mp_drawing = mp.solutions.drawing_utils
+
         args = parser.parse_args()
         prefix = re.findall(r"best_\d+\.\d+_", args.weight)[0]
         suffix = re.findall(r"_\d+\.pth", args.weight)[0]
@@ -712,6 +717,16 @@ class ItemsDetector:
             cudnn.fastest = True
             self.net = self.net.cuda()
 
+    def detect_body_pose(self, raw_frame, draw_frame):
+        # Convert the frame to RGB
+        frame_rgb = cv2.cvtColor(copy.deepcopy(raw_frame), cv2.COLOR_BGR2RGB)
+
+        # Process the frame to detect pose
+        results = self.pose.process(frame_rgb)
+        # Draw landmarks on the frame
+        if results.pose_landmarks:
+            self.mp_drawing.draw_landmarks(draw_frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
+    
     def set_homography(self, homography_matrix: np.ndarray) -> None:
         """
         Sets the homography matrix and calculates its determinant.
@@ -865,7 +880,7 @@ class ItemsDetector:
         return ids_p, class_p, box_p, masks
 
     def get_item_from_mask(
-        self, img: np.array, bbox: dict, mask: np.array, depth_frame: np.array,type: int, class_name : str
+        self, raw_img: np.array, draw_frame: np.array, bbox: dict, mask: np.array, depth_frame: np.array,type: int, class_name : str
     ):
         """
         Creates object inner rectangle given the mask from neural net.
@@ -899,8 +914,12 @@ class ItemsDetector:
         contours, _ = cv2.findContours(
             mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        # cv2.drawContours(img, contours, -1, (0, 255, 0), 3)
-
+        # cv2.drawContours(draw_frame, contours, -1, (0, 255, 0), 3)
+        if class_name == 'person':
+            canvas = np.zeros_like(raw_img)
+            canvas[ymin:ymax, xmin:xmax,...] = raw_img[ymin:ymax, xmin:xmax,...]
+            self.detect_body_pose(canvas, draw_frame)
+            
         item = Detection()
 
         item.set_type(type)
@@ -1037,7 +1056,7 @@ class ItemsDetector:
                         cv2.LINE_AA,
                     )
                 item = self.get_item_from_mask(
-                    img_np_detect, bbox, masks_p[i], depth_frame ,int(ids_p[i]), class_name = self.cfg.class_names[ids_p[i]]
+                    rgb_frame, img_np_detect, bbox, masks_p[i], depth_frame ,int(ids_p[i]), class_name = self.cfg.class_names[ids_p[i]]
                 )
                 # is_cx_low_ok = (
                 #     item.centroid_px.x - item.width / 2 < self.ignore_horizontal_px
@@ -1073,10 +1092,7 @@ class ObstacleDetection():
     def __init__(self, parser) -> None:
         self.bridge = CvBridge()
         self.depth_frame = None
-        # Initialize MediaPipe Drawing module
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose()
-        self.mp_drawing = mp.solutions.drawing_utils
+        self.masked_depth = None
         self.detector = ItemsDetector(parser)
         self.tracker = DetectionTracker(20)
         rospy.init_node('yolact_detector')
@@ -1084,6 +1100,7 @@ class ObstacleDetection():
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.depth_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.pick_point_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.goal_point_callback)
+        self.pick_centroid_pub = rospy.Publisher('/pick_centroid', String, queue_size=10)
         self.info_sub = rospy.Subscriber('/xtion/depth/camera_info', CameraInfo, self.camera_info_callback)
         self.depth_pub = rospy.Publisher('/xtion/depth/image_detected', Image, queue_size=10)
         self.pick_point_pub = rospy.Publisher('/pick_point', PointStamped, queue_size=10)
@@ -1140,8 +1157,9 @@ class ObstacleDetection():
 
             point_msg = self.create_point_msg(x, y, depth_value, depth_image_msg.header)
 
-            # Publish the transformed point
+            # Publish the transformed point and centroid
             self.pick_point_pub.publish(point_msg)
+            self.pick_centroid_pub.publish(str((x,y)))
 
     def goal_point_callback(self, depth_image_msg):
         # Convert the depth image message to a NumPy array
@@ -1201,6 +1219,8 @@ class ObstacleDetection():
 
     def depth_callback(self,msg):
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        if self.masked_depth is not None:
+            self.publish_depth_image(self.masked_depth)
 
     def filter_by_class(self, detected_objects, classes):
         return [item.centroid_px for item in detected_objects if item.class_name in classes]
@@ -1208,12 +1228,8 @@ class ObstacleDetection():
     def image_callback(self, msg):
         frame_origin = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         
-        img_np_detect, detected_objects, masked_depth = self.detector.deep_item_detector(frame_origin, self.depth_frame,0.0)
-
-        if masked_depth is not None:
-            self.publish_depth_image(masked_depth)
-            # point_cloud_msg = self.generate_point_cloud(masked_depth)
-            # self.pointcloud_pub.publish(point_cloud_msg)
+        img_np_detect, detected_objects, self.masked_depth = self.detector.deep_item_detector(frame_origin, self.depth_frame,0.0)
+        
         if detected_objects:
             pick_points = self.filter_by_class(detected_objects, ('backpack','handbag','suitcase'))
             self.point_to_pick = pick_points[0] if pick_points else None
@@ -1245,7 +1261,7 @@ class ObstacleDetection():
                         )
             cv2.circle(img_np_detect, item.centroid_px, radius=3, color=(0, 0, 255), thickness=-1)
 
-        img_np_detect = self.detect_body_pose(frame_origin, img_np_detect)
+        # img_np_detect = self.detect_body_pose(frame_origin, img_np_detect)
         cv2.imshow('detections', img_np_detect)
             
         key = cv2.waitKey(1)
