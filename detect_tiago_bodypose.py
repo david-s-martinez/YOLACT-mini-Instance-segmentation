@@ -1101,6 +1101,7 @@ class ObstacleDetection():
         rospy.Subscriber("/xtion/rgb/image_raw", Image, self.image_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.depth_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.pick_point_callback)
+        rospy.Subscriber("/xtion/depth/camera_info", CameraInfo, self.pick_centroid_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.goal_point_callback)
         self.info_sub = rospy.Subscriber('/xtion/depth/camera_info', CameraInfo, self.camera_info_callback)
         self.depth_pub = rospy.Publisher('/xtion/depth/image_detected', Image, queue_size=10)
@@ -1162,6 +1163,15 @@ class ObstacleDetection():
             # Publish the transformed point and centroid
             self.pick_point_pub.publish(point_msg)
             self.pick_centroid_pub.publish(str([x,y]))
+
+    def pick_centroid_callback(self, msg):
+        if self.point_to_pick is not None:
+            # Get depth value at pixel coordinates (x, y)
+            x = self.point_to_pick[0] # Example pixel coordinates
+            y = self.point_to_pick[1]
+            self.pick_centroid_pub.publish(str([x,y]))
+        else:
+            self.pick_centroid_pub.publish(str(None))
 
     def goal_point_callback(self, depth_image_msg):
         # Convert the depth image message to a NumPy array
