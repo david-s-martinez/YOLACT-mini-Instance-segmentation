@@ -899,7 +899,6 @@ class ItemsDetector:
         ymax = bbox["ymax"]
         xmin = bbox["xmin"]
         xmax = bbox["xmax"]
-        angle = 0
         box = np.int64(
             np.array([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]])
         )
@@ -918,8 +917,10 @@ class ItemsDetector:
         max_person_dist = 2.0 
         min_person_dist = 1.0 
         is_person_present = class_name == 'person'and (max_person_dist > depth_frame[centroid[1],centroid[0]]/1000 > min_person_dist)
+
         if is_person_present:
             print("My Human is found!")
+            class_name ='my_person'
             canvas = np.zeros_like(raw_img)
             canvas[ymin:ymax, xmin:xmax,...] = raw_img[ymin:ymax, xmin:xmax,...]
             self.detect_body_pose(canvas, draw_frame)
@@ -930,7 +931,6 @@ class ItemsDetector:
         item.set_class_name(class_name)
         item.set_centroid(centroid[0], centroid[1])
         item.set_bounding_size(bbox["w"], bbox["h"])
-        item.add_angle_to_average(angle)
 
         return item
 
@@ -1248,7 +1248,7 @@ class ObstacleDetection():
             pick_points = self.filter_by_class(detected_objects, ('backpack','handbag','suitcase'))
             self.point_to_pick = pick_points[0] if pick_points else None
 
-            goal_points = self.filter_by_class(detected_objects, ('person'))
+            goal_points = self.filter_by_class(detected_objects, ('my_person',))
             self.goal_point = goal_points[0] if goal_points else None
         else: 
             self.point_to_pick = None
