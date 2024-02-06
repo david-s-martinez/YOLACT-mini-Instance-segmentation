@@ -293,6 +293,7 @@ class Detection:
         # Type of the detection
         self.type = None
         self.class_name = None
+        self.arm_status = None
 
         # X Y centroid value in frame pixels,
         # of the position where the detection last last detected by the camera.
@@ -381,6 +382,16 @@ class Detection:
         """
 
         self.class_name = class_name
+
+    def set_arm_status(self, arm_status):
+        """
+        Sets arm_status type.
+
+        Args:
+            arm_status (str): str representing type of the arm_status.
+        """
+
+        self.arm_status = arm_status
 
     def set_type(self, detection_type: int) -> None:
         """
@@ -804,7 +815,7 @@ class ItemsDetector:
     def detect_arm_raise(self, raw_frame, draw_frame, angle_thresh = 70):
         result = self.pose.process(raw_frame)
         arm_status = "Arms Not Raised"
-        raised_arm = ""
+        raised_arm = "None"
 
         if result.pose_landmarks:
             imgHeight, imgWidth = draw_frame.shape[:2]
@@ -839,14 +850,12 @@ class ItemsDetector:
                 raised_arm = "right"
             else :
                 arm_status = "Arms Not Raised"
-                raised_arm = "none"
-                
-            print(raised_arm, left_arm_angle, right_arm_angle)
+                raised_arm = "None"
             
             # Display the status
             cv2.putText(draw_frame, arm_status, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
 
-        return arm_status
+        return raised_arm
 
 
     def calculate_angle(self, a, b, c):
@@ -868,16 +877,14 @@ class ItemsDetector:
 
         # Process the frame to detect pose
         results = self.pose.process(frame_rgb)
-        
+        arm_status = "None"
         # Draw landmarks on the frame
         if results.pose_landmarks:
             self.mp_drawing.draw_landmarks(draw_frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
             
             # Detect arm raise
             arm_status = self.detect_arm_raise(raw_frame, draw_frame)
-            
-            # Display arm status
-            cv2.putText(draw_frame, arm_status, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+            return arm_status
     
     def set_homography(self, homography_matrix: np.ndarray) -> None:
         """
@@ -1070,15 +1077,16 @@ class ItemsDetector:
         min_person_dist = 1.0 
         is_person_present = class_name == 'person'and (max_person_dist > depth_frame[centroid[1],centroid[0]]/1000 > min_person_dist)
 
+        item = Detection()
         if is_person_present:
             print("My Human is found!")
             class_name ='my_person'
             canvas = np.zeros_like(raw_img)
             canvas[ymin:ymax, xmin:xmax,...] = raw_img[ymin:ymax, xmin:xmax,...]
-            self.detect_body_pose(canvas, draw_frame)
+            arm_status = self.detect_body_pose(canvas, draw_frame)
+            item.set_arm_status(arm_status)
             cv2.imshow('person', canvas)
             
-        item = Detection()
 
         item.set_type(type)
         item.set_class_name(class_name)
@@ -1257,16 +1265,19 @@ class ObstacleDetection():
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.pick_point_callback)
         rospy.Subscriber("/xtion/depth/camera_info", CameraInfo, self.pick_centroid_callback)
         rospy.Subscriber("/xtion/depth/camera_info", CameraInfo, self.goal_centroid_callback)
+        rospy.Subscriber("/xtion/depth/camera_info", CameraInfo, self.arm_status_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.goal_point_callback)
         self.info_sub = rospy.Subscriber('/xtion/depth/camera_info', CameraInfo, self.camera_info_callback)
         self.depth_pub = rospy.Publisher('/xtion/depth/image_detected', Image, queue_size=10)
         self.pick_centroid_pub = rospy.Publisher('/pick_centroid', String, queue_size=10)
         self.goal_centroid_pub = rospy.Publisher('/goal_centroid', String, queue_size=10)
+        self.arm_status_pub = rospy.Publisher('/arm_status', String, queue_size=10)
         self.pick_point_pub = rospy.Publisher('/pick_point', PointStamped, queue_size=10)
         self.goal_point_pub = rospy.Publisher('/goal_point', PointStamped, queue_size=10)
         # self.pointcloud_pub = rospy.Publisher('/detections_point_cloud', PointCloud2, queue_size=10)
         self.point_to_pick = None
         self.goal_point = None
+        self.arm_status = None
         try:
             rospy.spin()
         except KeyboardInterrupt:
@@ -1358,6 +1369,12 @@ class ObstacleDetection():
         else:
             self.goal_centroid_pub.publish(str(None))
 
+    def arm_status_callback(self, msg):
+        if self.arm_status is not None:
+            self.arm_status_pub.publish(str(self.arm_status))
+        else:
+            self.arm_status_pub.publish(str(None))
+
     def generate_point_cloud(self, depth_image):
         # Generate 3D points from the depth image (You need to implement this)
         # For demonstration, we are generating a simple point cloud with random points
@@ -1395,7 +1412,7 @@ class ObstacleDetection():
             self.publish_depth_image(self.masked_depth)
 
     def filter_by_class(self, detected_objects, classes):
-        return [item.centroid_px for item in detected_objects if item.class_name in classes]
+        return [item for item in detected_objects if item.class_name in classes]
          
     def image_callback(self, msg):
         frame_origin = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -1403,11 +1420,12 @@ class ObstacleDetection():
         img_np_detect, detected_objects, self.masked_depth = self.detector.deep_item_detector(frame_origin, self.depth_frame,0.0)
         
         if detected_objects:
-            pick_points = self.filter_by_class(detected_objects, ('backpack','handbag','suitcase'))
-            self.point_to_pick = pick_points[0] if pick_points else None
+            pick_objects = self.filter_by_class(detected_objects, ('backpack','handbag','suitcase'))
+            self.point_to_pick = pick_objects[0].centroid_px if pick_objects else None
 
-            goal_points = self.filter_by_class(detected_objects, ('my_person',))
-            self.goal_point = goal_points[0] if goal_points else None
+            goal_objects = self.filter_by_class(detected_objects, ('my_person',))
+            self.goal_point = goal_objects[0].centroid_px if goal_objects else None
+            self.arm_status = goal_objects[0].arm_status if goal_objects else None
         else: 
             self.point_to_pick = None
             self.goal_point = None
