@@ -13,6 +13,7 @@ import argparse
 import cv2
 import time
 import re
+import math
 import torch.utils.data as data
 import torch.backends.cudnn as cudnn
 
@@ -702,6 +703,15 @@ class ItemsDetector:
         self.pose = self.mp_pose.Pose()
         self.mp_drawing = mp.solutions.drawing_utils
 
+        self.mpHands = mp.solutions.hands
+        self.hands = self.mpHands.Hands(min_detection_confidence=0.1, min_tracking_confidence=0.5)
+        self.mpDraw = mp.solutions.drawing_utils
+        self.handLmsStyle = self.mpDraw.DrawingSpec(color=(0, 0, 255), thickness=3)
+        self.handConStyle = self.mpDraw.DrawingSpec(color=(0, 255, 0), thickness=5)
+        self.pTime = 0
+        self.cTime = 0
+        self.direction_text = ""
+
         args = parser.parse_args()
         prefix = re.findall(r"best_\d+\.\d+_", args.weight)[0]
         suffix = re.findall(r"_\d+\.pth", args.weight)[0]
@@ -717,15 +727,157 @@ class ItemsDetector:
             cudnn.fastest = True
             self.net = self.net.cuda()
 
+    def fingersUp(self, handLandmarks, imgWidth, imgHeight):
+        if handLandmarks:
+            tipIds = [4, 8, 12, 16, 20]
+            fingers = []
+            # Thumb
+            thumb_tip_x = int(handLandmarks.landmark[tipIds[0]].x * imgWidth)
+            thumb_lower_x = int(handLandmarks.landmark[tipIds[0] - 1].x * imgWidth)
+            if thumb_tip_x > thumb_lower_x:  # 根据拇指的方向调整这个条件
+                fingers.append(1)
+            elif thumb_tip_x < thumb_lower_x:
+                fingers.append(-1)
+            else:
+                fingers.append(0)
+
+            # Fingers
+            for id in range(1, 5):
+                tip_x = int(handLandmarks.landmark[tipIds[id]].x * imgWidth)
+                tip_y = int(handLandmarks.landmark[tipIds[id]].y * imgHeight)
+                lower_x = int(handLandmarks.landmark[tipIds[id] - 2].x * imgWidth)
+                lower_y = int(handLandmarks.landmark[tipIds[id] - 2].y * imgHeight)
+                if tip_x > lower_x:
+                    fingers.append(1)
+                elif tip_x < lower_x:
+                    fingers.append(-1)
+                else:
+                    fingers.append(0)
+            return fingers
+        return []
+
+    def findDistance(self, lmList, p1, p2, img, draw=True, r=15, t=3):
+        x1, y1 = lmList[p1][1:]
+        x2, y2 = lmList[p2][1:]
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+
+        if draw:
+            cv2.line(img, (x1, y1), (x2, y2), (255, 0, 255), t)
+            cv2.circle(img, (x1, y1), r, (255, 0, 255), cv2.FILLED)
+            cv2.circle(img, (x2, y2), r, (255, 0, 255), cv2.FILLED)
+            cv2.circle(img, (cx, cy), r, (0, 0, 255), cv2.FILLED)
+        length = math.hypot(x2 - x1, y2 - y1)
+
+        return length, img, [x1, y1, x2, y2, cx, cy]
+
+    def detect_hand_pose(self, raw_frame, draw_frame):
+        result = self.hands.process(raw_frame)
+
+        if result.multi_hand_landmarks:
+            imgHeight, imgWidth = draw_frame.shape[:2]
+            for handLms in result.multi_hand_landmarks:
+                self.mpDraw.draw_landmarks(raw_frame, handLms, self.mpHands.HAND_CONNECTIONS, self.handLmsStyle, self.handConStyle)
+                fingers_status = self.fingersUp(handLms, imgWidth, imgHeight)
+                self.print_direction(fingers_status, raw_frame)
+
+        self.cTime = time.time()
+        fps = 1 / (self.cTime - self.pTime)
+        self.pTime = self.cTime
+        # cv2.putText(draw_frame, f"FPS: {int(fps)}", (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
+        # cv2.imshow('Hand Tracking', draw_frame)
+
+    def print_direction(self, fingers_status, img):
+        self.direction_text = ""
+        if -1 in fingers_status:
+            self.direction_text = "RIGHT"
+        elif 1 in fingers_status:
+            self.direction_text = "LEFT"
+        elif fingers_status == [0, 0, 0, 0, 0]:
+            self.direction_text = "YES"
+
+        if self.direction_text:
+            status_str = ', '.join(map(str, fingers_status))
+            cv2.putText(img, f"{self.direction_text}: [{status_str}]", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
+
+        return self.direction_text
+    
+    def detect_arm_raise(self, raw_frame, draw_frame, angle_thresh = 70):
+        result = self.pose.process(raw_frame)
+        arm_status = "Arms Not Raised"
+        raised_arm = ""
+
+        if result.pose_landmarks:
+            imgHeight, imgWidth = draw_frame.shape[:2]
+            pose_landmarks = result.pose_landmarks
+
+            # Landmark indices for hips, shoulders, and elbows
+            left_hip = (pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP.value].x * imgWidth,
+                        pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP.value].y * imgHeight)
+            right_hip = (pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_HIP.value].x * imgWidth,
+                        pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_HIP.value].y * imgHeight)
+            left_shoulder = (pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * imgWidth,
+                            pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * imgHeight)
+            right_shoulder = (pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x * imgWidth,
+                            pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y * imgHeight)
+            left_elbow = (pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].x * imgWidth,
+                        pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW.value].y * imgHeight)
+            right_elbow = (pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value].x * imgWidth,
+                        pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW.value].y * imgHeight)
+
+            # Calculate angles for left arm
+            left_arm_angle = self.calculate_angle(left_hip, left_shoulder, left_elbow)
+            # Calculate angles for right arm
+            right_arm_angle = self.calculate_angle(right_hip, right_shoulder, right_elbow)
+            
+            # Check if either arm is raised based on the angle
+            if left_arm_angle > right_arm_angle and left_arm_angle > angle_thresh:
+                arm_status = "Left Arm Raised"
+                raised_arm = "left"
+                
+            elif right_arm_angle > left_arm_angle and right_arm_angle > angle_thresh:
+                arm_status = "Right Arm Raised"
+                raised_arm = "right"
+            else :
+                arm_status = "Arms Not Raised"
+                raised_arm = "none"
+                
+            print(raised_arm, left_arm_angle, right_arm_angle)
+            
+            # Display the status
+            cv2.putText(draw_frame, arm_status, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
+
+        return arm_status
+
+
+    def calculate_angle(self, a, b, c):
+        a = np.array(a) # First
+        b = np.array(b) # Mid
+        c = np.array(c) # End
+        
+        radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+        angle = np.abs(radians*180.0/np.pi)
+        
+        if angle >180.0:
+            angle = 360-angle
+            
+        return angle
+    
     def detect_body_pose(self, raw_frame, draw_frame):
         # Convert the frame to RGB
         frame_rgb = cv2.cvtColor(copy.deepcopy(raw_frame), cv2.COLOR_BGR2RGB)
 
         # Process the frame to detect pose
         results = self.pose.process(frame_rgb)
+        
         # Draw landmarks on the frame
         if results.pose_landmarks:
             self.mp_drawing.draw_landmarks(draw_frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
+            
+            # Detect arm raise
+            arm_status = self.detect_arm_raise(raw_frame, draw_frame)
+            
+            # Display arm status
+            cv2.putText(draw_frame, arm_status, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
     
     def set_homography(self, homography_matrix: np.ndarray) -> None:
         """
@@ -924,6 +1076,7 @@ class ItemsDetector:
             canvas = np.zeros_like(raw_img)
             canvas[ymin:ymax, xmin:xmax,...] = raw_img[ymin:ymax, xmin:xmax,...]
             self.detect_body_pose(canvas, draw_frame)
+            cv2.imshow('person', canvas)
             
         item = Detection()
 
@@ -1082,7 +1235,6 @@ class ItemsDetector:
             # depth_color = cv2.applyColorMap(depth_frame, cv2.COLORMAP_HOT)
 
             combined_mask = np.sum(masks_p, axis=0)
-            print(combined_mask.shape)
             masked_depth = cv2.bitwise_and(depth_frame, depth_frame, mask=combined_mask.astype(np.uint8))
 
             cv2.imshow('depth', depth_color)
