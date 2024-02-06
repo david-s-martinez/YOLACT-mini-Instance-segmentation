@@ -1342,6 +1342,12 @@ class ObstacleDetection():
 
             # Publish the transformed point
             self.goal_point_pub.publish(point_msg)
+        else:
+            point_msg = self.create_point_msg(0, 0, 0.0, depth_image_msg.header)
+
+            # Publish the transformed point
+            self.goal_point_pub.publish(point_msg)
+
 
     def goal_centroid_callback(self, msg):
         if self.goal_point is not None:
