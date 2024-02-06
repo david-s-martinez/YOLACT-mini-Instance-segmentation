@@ -915,7 +915,9 @@ class ItemsDetector:
             mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         # cv2.drawContours(draw_frame, contours, -1, (0, 255, 0), 3)
-        is_person_present = class_name == 'person'and (2.0 > depth_frame[centroid[1],centroid[0]]/1000 > 1.0)
+        max_person_dist = 2.0 
+        min_person_dist = 1.0 
+        is_person_present = class_name == 'person'and (max_person_dist > depth_frame[centroid[1],centroid[0]]/1000 > min_person_dist)
         if is_person_present:
             print("My Human is found!")
             canvas = np.zeros_like(raw_img)
@@ -1102,10 +1104,12 @@ class ObstacleDetection():
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.depth_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.pick_point_callback)
         rospy.Subscriber("/xtion/depth/camera_info", CameraInfo, self.pick_centroid_callback)
+        rospy.Subscriber("/xtion/depth/camera_info", CameraInfo, self.goal_centroid_callback)
         rospy.Subscriber("/xtion/depth/image_raw", Image, self.goal_point_callback)
         self.info_sub = rospy.Subscriber('/xtion/depth/camera_info', CameraInfo, self.camera_info_callback)
         self.depth_pub = rospy.Publisher('/xtion/depth/image_detected', Image, queue_size=10)
         self.pick_centroid_pub = rospy.Publisher('/pick_centroid', String, queue_size=10)
+        self.goal_centroid_pub = rospy.Publisher('/goal_centroid', String, queue_size=10)
         self.pick_point_pub = rospy.Publisher('/pick_point', PointStamped, queue_size=10)
         self.goal_point_pub = rospy.Publisher('/goal_point', PointStamped, queue_size=10)
         # self.pointcloud_pub = rospy.Publisher('/detections_point_cloud', PointCloud2, queue_size=10)
@@ -1186,6 +1190,15 @@ class ObstacleDetection():
 
             # Publish the transformed point
             self.goal_point_pub.publish(point_msg)
+
+    def goal_centroid_callback(self, msg):
+        if self.goal_point is not None:
+            # Get depth value at pixel coordinates (x, y)
+            x = self.goal_point[0] # Example pixel coordinates
+            y = self.goal_point[1]
+            self.goal_centroid_pub.publish(str([x,y]))
+        else:
+            self.goal_centroid_pub.publish(str(None))
 
     def generate_point_cloud(self, depth_image):
         # Generate 3D points from the depth image (You need to implement this)
