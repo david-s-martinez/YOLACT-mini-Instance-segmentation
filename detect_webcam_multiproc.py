@@ -13,12 +13,12 @@ from utils import timer
 from utils.output_utils import nms, after_nms, draw_img
 from utils.common_utils import ProgressBar
 from utils.augmentations import val_aug
+import multiprocessing
 from multiprocessing import Process
 from multiprocessing import Pipe
-
 def main(net_in_conn, net_out_conn):
     parser = argparse.ArgumentParser(description='YOLACT Detection.')
-    parser.add_argument('--weight', default='weights/best_30.4_res101_coco_340000.pth', type=str)
+    parser.add_argument('--weight', default='weights/best_28.8_res50_coco_340000.pth', type=str)
     parser.add_argument('--img_size', type=int, default=544, help='The image size for validation.')
     parser.add_argument('--traditional_nms', default=False, action='store_true', help='Whether to use traditional nms.')
     parser.add_argument('--hide_mask', default=False, action='store_true', help='Hide masks in results.')
@@ -119,6 +119,7 @@ if __name__ == '__main__':
     cam_source = 0
     # cam_source = 'http://192.168.178.41:5000/video'
 
+    multiprocessing.set_start_method('spawn')
     net_in_conn, cam_out_conn = Pipe()
     send_detect_in_conn, net_out_conn = Pipe()
 
