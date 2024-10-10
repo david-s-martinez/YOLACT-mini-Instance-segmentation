@@ -100,31 +100,48 @@ def main(net_in_conn, net_out_conn):
         i+=1
  
 
-def cam_reader(cam_out_conn, cam_source):
-    cap = cv2.VideoCapture(cam_source)
-    target_fps = round(cap.get(cv2.CAP_PROP_FPS))
-    frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    num_frames = round(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    while cap.isOpened():
-        try:
-            ret, frame = cap.read()
-            height, width, channels = frame.shape
-            cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
-        except:
-            print("CAMERA COULD NOT BE OPEN")
-            break
+def cam_reader(cam_out_conn, cam_source, is_ip):
+    if is_ip:
+        cap = cv2.VideoCapture(cam_source)
+        target_fps = round(cap.get(cv2.CAP_PROP_FPS))
+        frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        num_frames = round(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        while True:
+            cap = cv2.VideoCapture(cam_source)
+            try:
+                ret, frame = cap.read()
+                height, width, channels = frame.shape
+                cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
+            except:
+                print("CAMERA COULD NOT BE OPEN")
+                break
+            del cap
+    else:
+        cap = cv2.VideoCapture(cam_source)
+        target_fps = round(cap.get(cv2.CAP_PROP_FPS))
+        frame_width = round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        num_frames = round(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        while cap.isOpened():
+            try:
+                ret, frame = cap.read()
+                height, width, channels = frame.shape
+                cam_out_conn.send({'frame':frame, 'num_frames':num_frames})
+            except:
+                print("CAMERA COULD NOT BE OPEN")
+                break
 
 if __name__ == '__main__':
     cam_source = 0
-    # cam_source = 'http://192.168.178.41:5000/video'
-
+    # cam_source = 'http://192.168.178.106:5000/video'
+    is_ip = isinstance(cam_source, str)
     multiprocessing.set_start_method('spawn')
     net_in_conn, cam_out_conn = Pipe()
     send_detect_in_conn, net_out_conn = Pipe()
 
     stream_reader_process = Process(target=cam_reader, 
-                                    args=(cam_out_conn, cam_source))
+                                    args=(cam_out_conn, cam_source, is_ip))
     rob_percept_process = Process(target=main, 
                                     args=(net_in_conn, net_out_conn))
     # post_detect_process = Process(target=post_detections, 
